@@ -1,11 +1,15 @@
 import { StatusBar } from 'expo-status-bar';
 import { type Href, useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
+  Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -29,8 +33,34 @@ type Message = {
 type ChatResponse = {
   pergunta: string;
   resposta: string;
+  provedor: 'groq' | 'ollama' | 'sem_consulta';
+  modelo: string | null;
 };
 
+type ModelsResponse = {
+  padrao: {
+    provedor: 'groq';
+    modelo: string;
+  };
+  modelos_groq: string[];
+  modelos_ollama: string[];
+};
+
+type ModelSelection = {
+  provedor: 'automatico' | 'groq' | 'ollama';
+  modelo: string | null;
+  label: string;
+};
+
+type LastProvider = Pick<ChatResponse, 'provedor' | 'modelo'>;
+
+const INITIAL_SELECTION: ModelSelection = {
+  provedor: 'automatico',
+  modelo: null,
+  label: 'Automático',
+};
+
+const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-20b';
 
 const INITIAL_MESSAGES: Message[] = [
   {
@@ -49,7 +79,69 @@ export default function HomeScreen() {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isModelMenuVisible, setIsModelMenuVisible] = useState(false);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [modelMenuError, setModelMenuError] = useState<string | null>(null);
+  const [groqModel, setGroqModel] = useState(DEFAULT_GROQ_MODEL);
+  const [localModels, setLocalModels] = useState<string[]>([]);
+  const [modelSelection, setModelSelection] = useState(INITIAL_SELECTION);
+  const [lastProvider, setLastProvider] = useState<LastProvider | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
+
+  const scrollToLatestMessage = useCallback((animated = true) => {
+    listRef.current?.scrollToEnd({ animated });
+  }, []);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => scrollToLatestMessage());
+
+    return () => cancelAnimationFrame(frame);
+  }, [isTyping, messages, scrollToLatestMessage]);
+
+  const openModelMenu = useCallback(async () => {
+    setIsModelMenuVisible(true);
+    setModelMenuError(null);
+
+    if (!API_URL) {
+      setModelMenuError(API_CONFIGURATION_ERROR);
+      return;
+    }
+
+    setIsLoadingModels(true);
+
+    try {
+      const response = await fetch(`${API_URL}/modelos`);
+
+      if (!response.ok) {
+        throw new Error(`A API respondeu com o status ${response.status}`);
+      }
+
+      const data: ModelsResponse = await response.json();
+
+      if (
+        typeof data?.padrao?.modelo !== 'string' ||
+        !Array.isArray(data.modelos_ollama)
+      ) {
+        throw new Error('A API retornou uma lista de modelos inválida');
+      }
+
+      setGroqModel(data.padrao.modelo);
+      setLocalModels(
+        data.modelos_ollama.filter(
+          (model): model is string => typeof model === 'string' && Boolean(model.trim())
+        )
+      );
+    } catch {
+      setModelMenuError('Não consegui carregar os modelos disponíveis.');
+    } finally {
+      setIsLoadingModels(false);
+    }
+  }, []);
+
+  const chooseModel = useCallback((selection: ModelSelection) => {
+    setModelSelection(selection);
+    setIsModelMenuVisible(false);
+  }, []);
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -78,7 +170,16 @@ export default function HomeScreen() {
         return;
       }
 
-      const url = `${API_URL}/chat?pergunta=${encodeURIComponent(text)}`;
+      const query = [
+        `pergunta=${encodeURIComponent(text)}`,
+        `provedor=${encodeURIComponent(modelSelection.provedor)}`,
+      ];
+
+      if (modelSelection.modelo) {
+        query.push(`modelo=${encodeURIComponent(modelSelection.modelo)}`);
+      }
+
+      const url = `${API_URL}/chat?${query.join('&')}`;
       const response = await fetch(url, { method: 'POST' });
 
       if (!response.ok) {
@@ -87,12 +188,26 @@ export default function HomeScreen() {
 
       const data: ChatResponse = await response.json();
 
+      if (
+        typeof data?.resposta !== 'string' ||
+        !data.resposta.trim() ||
+        !['groq', 'ollama', 'sem_consulta'].includes(data.provedor) ||
+        (data.modelo !== null && typeof data.modelo !== 'string')
+      ) {
+        throw new Error('A API retornou uma resposta inválida');
+      }
+
+      setLastProvider({
+        provedor: data.provedor,
+        modelo: data.modelo,
+      });
+
       setMessages((currentMessages) => [
         ...currentMessages,
         {
           id: createMessageId('sky'),
           author: 'sky',
-          text: data.resposta,
+          text: data.resposta.trim(),
         },
       ]);
     } catch (error) {
@@ -100,8 +215,8 @@ export default function HomeScreen() {
 
       const mensagemDeErro =
         error instanceof TypeError
-          ? 'Não consegui alcançar meu cérebro local. Verifique se a API está ligada e se o celular continua na mesma rede Wi-Fi.'
-          : 'Meu cérebro local respondeu com um erro. Verifique se a API está ativa e tente novamente.';
+          ? 'Sem conexão com a API da Sky. Verifique a rede e tente novamente.'
+          : 'A API não conseguiu responder. Tente novamente.';
 
       setMessages((currentMessages) => [
         ...currentMessages,
@@ -114,16 +229,17 @@ export default function HomeScreen() {
     } finally {
       setIsTyping(false);
     }
-  }, [input, isTyping]);
+  }, [input, isTyping, modelSelection]);
+
+  const providerFooter = lastProvider
+    ? lastProvider.provedor === 'sem_consulta'
+      ? 'Última resposta • sem consulta de modelo'
+      : `Última resposta • ${lastProvider.provedor} • ${lastProvider.modelo}`
+    : `Modo atual • ${modelSelection.label}`;
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
-      <StatusBar style="light" backgroundColor="#050817" />
-
-      <View pointerEvents="none" style={styles.backgroundDecoration}>
-        <View style={styles.glowLarge} />
-        <View style={styles.glowSmall} />
-      </View>
+    <SafeAreaView style={styles.screen} edges={['top', 'right', 'bottom', 'left']}>
+      <StatusBar style="light" backgroundColor="#000000" />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -135,12 +251,19 @@ export default function HomeScreen() {
               <Text style={styles.miniAvatarText}>S</Text>
             </View>
 
-            <View style={styles.brandText}>
-              <Text style={styles.name}>Sky</Text>
-              <View style={styles.statusRow}>
-                <View style={styles.statusDot} />
-                <Text style={styles.statusText}>Cérebro local conectado</Text>
-              </View>
+            <View style={styles.menuSlot}>
+              <Pressable
+                accessibilityHint="Abre as opções da conversa"
+                accessibilityLabel="Menu da conversa"
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={openModelMenu}
+                style={({ pressed }) => [
+                  styles.menuButton,
+                  pressed && styles.menuButtonPressed,
+                ]}>
+                <Text style={styles.menuText}>⋮</Text>
+              </Pressable>
             </View>
 
             <View style={styles.headerActions}>
@@ -166,8 +289,11 @@ export default function HomeScreen() {
             <View style={styles.orbitOuter}>
               <View style={styles.orbitMiddle}>
                 <View style={styles.avatar}>
-                  <Text style={styles.avatarSpark}>✦</Text>
-                  <Text style={styles.avatarLetter}>S</Text>
+                  <Image
+                    source={require('@/assets/images/sky-idle.png')}
+                    resizeMode="contain"
+                    style={styles.idleImage}
+                  />
                 </View>
               </View>
             </View>
@@ -186,9 +312,11 @@ export default function HomeScreen() {
             ref={listRef}
             data={messages}
             keyExtractor={(message) => message.id}
+            style={styles.chatList}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             contentContainerStyle={styles.messageList}
-            onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+            onLayout={() => scrollToLatestMessage(false)}
             renderItem={({ item }) => {
               const isSky = item.author === 'sky';
 
@@ -198,18 +326,11 @@ export default function HomeScreen() {
                     styles.messageRow,
                     isSky ? styles.skyMessageRow : styles.userMessageRow,
                   ]}>
-                  {isSky && (
-                    <View style={styles.messageAvatar}>
-                      <Text style={styles.messageAvatarText}>S</Text>
-                    </View>
-                  )}
-
                   <View
                     style={[
                       styles.messageBubble,
                       isSky ? styles.skyBubble : styles.userBubble,
                     ]}>
-                    {isSky && <Text style={styles.messageAuthor}>SKY</Text>}
                     <Text style={[styles.messageText, !isSky && styles.userMessageText]}>
                       {item.text}
                     </Text>
@@ -220,9 +341,6 @@ export default function HomeScreen() {
             ListFooterComponent={
               isTyping ? (
                 <View style={[styles.messageRow, styles.skyMessageRow]}>
-                  <View style={styles.messageAvatar}>
-                    <Text style={styles.messageAvatarText}>S</Text>
-                  </View>
                   <View style={[styles.messageBubble, styles.skyBubble, styles.typingBubble]}>
                     <Text style={styles.typingText}>Sky está pensando •••</Text>
                   </View>
@@ -258,43 +376,143 @@ export default function HomeScreen() {
                 <Text style={styles.sendIcon}>↑</Text>
               </Pressable>
             </View>
-            <Text style={styles.localNotice}>Ollama local • llama3.2:1b</Text>
+            <Text style={styles.localNotice}>{providerFooter}</Text>
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setIsModelMenuVisible(false)}
+        statusBarTranslucent
+        transparent
+        visible={isModelMenuVisible}>
+        <Pressable
+          accessible={false}
+          onPress={() => setIsModelMenuVisible(false)}
+          style={styles.menuOverlay}>
+          <Pressable
+            accessibilityRole="menu"
+            onPress={(event) => event.stopPropagation()}
+            style={styles.modelMenu}>
+            <View style={styles.modelMenuHeader}>
+              <View style={styles.modelMenuTitleArea}>
+                <Text style={styles.modelMenuTitle}>Modelo da conversa</Text>
+                <Text style={styles.modelMenuCurrent}>
+                  Atual: {modelSelection.label}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityLabel="Fechar menu"
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={() => setIsModelMenuVisible(false)}>
+                <Text style={styles.modelMenuClose}>×</Text>
+              </Pressable>
+            </View>
+
+            <ScrollView
+              contentContainerStyle={styles.modelOptions}
+              showsVerticalScrollIndicator={false}>
+              <ModelOption
+                label="Automático"
+                description="Groq primeiro, Ollama como fallback"
+                selected={modelSelection.provedor === 'automatico'}
+                onPress={() => chooseModel(INITIAL_SELECTION)}
+              />
+              <ModelOption
+                label="Groq"
+                description={groqModel}
+                selected={modelSelection.provedor === 'groq'}
+                onPress={() =>
+                  chooseModel({
+                    provedor: 'groq',
+                    modelo: groqModel,
+                    label: `Groq • ${groqModel}`,
+                  })
+                }
+              />
+
+              <Text style={styles.localModelsTitle}>MODELOS DO PC (OLLAMA)</Text>
+              {isLoadingModels ? (
+                <View style={styles.modelsLoading}>
+                  <ActivityIndicator color="#8EBBFF" />
+                  <Text style={styles.modelsLoadingText}>Consultando Ollama...</Text>
+                </View>
+              ) : (
+                localModels.map((model) => (
+                  <ModelOption
+                    key={model}
+                    label={model}
+                    description="Ollama local"
+                    selected={
+                      modelSelection.provedor === 'ollama' &&
+                      modelSelection.modelo === model
+                    }
+                    onPress={() =>
+                      chooseModel({
+                        provedor: 'ollama',
+                        modelo: model,
+                        label: `Ollama • ${model}`,
+                      })
+                    }
+                  />
+                ))
+              )}
+
+              {!isLoadingModels && localModels.length === 0 && !modelMenuError && (
+                <Text style={styles.modelsEmpty}>Nenhum modelo local encontrado.</Text>
+              )}
+              {modelMenuError && (
+                <Text style={styles.modelMenuError}>{modelMenuError}</Text>
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+type ModelOptionProps = {
+  label: string;
+  description: string;
+  selected: boolean;
+  onPress: () => void;
+};
+
+function ModelOption({
+  label,
+  description,
+  selected,
+  onPress,
+}: ModelOptionProps) {
+  return (
+    <Pressable
+      accessibilityRole="menuitem"
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.modelOption,
+        selected && styles.modelOptionSelected,
+        pressed && styles.modelOptionPressed,
+      ]}>
+      <View style={styles.modelOptionText}>
+        <Text style={styles.modelOptionLabel}>{label}</Text>
+        <Text style={styles.modelOptionDescription}>{description}</Text>
+      </View>
+      {selected && <Text style={styles.modelOptionCheck}>✓</Text>}
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#050817',
+    backgroundColor: '#000000',
   },
   keyboardArea: {
     flex: 1,
-  },
-  backgroundDecoration: {
-    ...StyleSheet.absoluteFillObject,
-    overflow: 'hidden',
-  },
-  glowLarge: {
-    position: 'absolute',
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    backgroundColor: 'rgba(34, 104, 255, 0.12)',
-    top: -150,
-    right: -130,
-  },
-  glowSmall: {
-    position: 'absolute',
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: 'rgba(67, 220, 255, 0.07)',
-    top: 185,
-    left: -110,
   },
   header: {
     paddingHorizontal: 20,
@@ -320,32 +538,25 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
   },
-  brandText: {
+  menuSlot: {
     flex: 1,
     marginLeft: 11,
   },
-  name: {
-    color: '#F5F8FF',
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-  },
-  statusRow: {
-    flexDirection: 'row',
+  menuButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
-    marginTop: 1,
+    justifyContent: 'center',
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#58E1B5',
-    marginRight: 6,
+  menuButtonPressed: {
+    opacity: 0.65,
   },
-  statusText: {
-    color: '#8494B9',
-    fontSize: 11,
-    fontWeight: '600',
+  menuText: {
+    color: '#A8C9FA',
+    fontSize: 24,
+    lineHeight: 26,
+    fontWeight: '700',
   },
   betaBadge: {
     borderWidth: 1,
@@ -417,18 +628,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#16376D',
     borderWidth: 1,
     borderColor: '#69A8FF',
+    overflow: 'hidden',
   },
-  avatarLetter: {
-    color: '#F3F8FF',
-    fontSize: 34,
-    fontWeight: '900',
-  },
-  avatarSpark: {
-    position: 'absolute',
-    top: 6,
-    right: 10,
-    color: '#8CEBFF',
-    fontSize: 12,
+  idleImage: {
+    width: 70,
+    height: 70,
   },
   identityText: {
     flex: 1,
@@ -451,11 +655,14 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
-    backgroundColor: '#090E20',
+    backgroundColor: '#000000',
     borderWidth: 1,
     borderBottomWidth: 0,
     borderColor: '#18233F',
     overflow: 'hidden',
+  },
+  chatList: {
+    flex: 1,
   },
   messageList: {
     paddingHorizontal: 14,
@@ -474,22 +681,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingLeft: 48,
   },
-  messageAvatar: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#153569',
-    borderWidth: 1,
-    borderColor: '#477FD0',
-    marginRight: 8,
-  },
-  messageAvatarText: {
-    color: '#E5F1FF',
-    fontSize: 11,
-    fontWeight: '900',
-  },
   messageBubble: {
     maxWidth: '100%',
     borderRadius: 18,
@@ -498,21 +689,16 @@ const styles = StyleSheet.create({
   },
   skyBubble: {
     flexShrink: 1,
-    backgroundColor: '#111A31',
+    backgroundColor: '#0C111D',
     borderTopLeftRadius: 6,
     borderWidth: 1,
-    borderColor: '#1E2D4D',
+    borderColor: 'rgba(92, 82, 170, 0.28)',
   },
   userBubble: {
-    backgroundColor: '#2563C7',
+    backgroundColor: '#243F92',
+    experimental_backgroundImage:
+      'linear-gradient(135deg, #173F82 0%, #40256F 100%)',
     borderBottomRightRadius: 6,
-  },
-  messageAuthor: {
-    color: '#72ABFF',
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 1.2,
-    marginBottom: 4,
   },
   messageText: {
     color: '#D9E1F2',
@@ -531,6 +717,7 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   composerArea: {
+    flexShrink: 0,
     paddingHorizontal: 12,
     paddingTop: 10,
     paddingBottom: Platform.OS === 'ios' ? 9 : 12,
@@ -587,5 +774,117 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 6,
     letterSpacing: 0.2,
+  },
+  menuOverlay: {
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingTop: 72,
+    paddingHorizontal: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+  },
+  modelMenu: {
+    maxHeight: '72%',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#263657',
+    backgroundColor: '#090E20',
+    overflow: 'hidden',
+  },
+  modelMenuHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#18233F',
+  },
+  modelMenuTitleArea: {
+    flex: 1,
+  },
+  modelMenuTitle: {
+    color: '#EDF3FF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  modelMenuCurrent: {
+    color: '#8290B1',
+    fontSize: 11,
+    marginTop: 3,
+  },
+  modelMenuClose: {
+    color: '#A8C9FA',
+    fontSize: 26,
+    lineHeight: 28,
+  },
+  modelOptions: {
+    padding: 10,
+  },
+  modelOption: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  modelOptionSelected: {
+    backgroundColor: '#111A31',
+    borderWidth: 1,
+    borderColor: 'rgba(92, 82, 170, 0.42)',
+  },
+  modelOptionPressed: {
+    opacity: 0.7,
+  },
+  modelOptionText: {
+    flex: 1,
+  },
+  modelOptionLabel: {
+    color: '#EAF1FF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  modelOptionDescription: {
+    color: '#7180A6',
+    fontSize: 10,
+    marginTop: 3,
+  },
+  modelOptionCheck: {
+    color: '#8EBBFF',
+    fontSize: 16,
+    fontWeight: '800',
+    marginLeft: 10,
+  },
+  localModelsTitle: {
+    color: '#53617F',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1.1,
+    marginTop: 12,
+    marginBottom: 5,
+    marginLeft: 12,
+  },
+  modelsLoading: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    gap: 9,
+  },
+  modelsLoadingText: {
+    color: '#8290B1',
+    fontSize: 12,
+  },
+  modelsEmpty: {
+    color: '#7180A6',
+    fontSize: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  modelMenuError: {
+    color: '#F0A6B2',
+    fontSize: 12,
+    lineHeight: 17,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
 });
