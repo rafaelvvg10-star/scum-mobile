@@ -84,7 +84,7 @@ export default function MemoriesScreen() {
   const confirmDelete = (memory: Memory) => {
     Alert.alert(
       'Esquecer memória?',
-      `A Sky deixará de lembrar: ${formatKey(memory.chave)} — ${memory.valor}`,
+      `O Scum deixará de lembrar: ${formatKey(memory.chave)} — ${memory.valor}`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -134,7 +134,7 @@ export default function MemoriesScreen() {
 
       <View style={styles.header}>
         <Pressable
-          accessibilityHint="Retorna à conversa com a Sky"
+          accessibilityHint="Retorna à conversa com o Scum"
           accessibilityLabel="Voltar para o chat"
           accessibilityRole="button"
           onPress={() => router.back()}
@@ -146,7 +146,7 @@ export default function MemoriesScreen() {
         </Pressable>
 
         <View style={styles.titleArea}>
-          <Text style={styles.title}>Memórias da Sky</Text>
+          <Text style={styles.title}>Memórias do Scum</Text>
           <Text style={styles.subtitle}>
             Informações essenciais guardadas localmente
           </Text>
@@ -221,7 +221,7 @@ export default function MemoriesScreen() {
               <Text style={styles.emptyIcon}>✦</Text>
               <Text style={styles.emptyTitle}>Nenhuma memória salva</Text>
               <Text style={styles.emptyText}>
-                Quando você contar algo importante para a Sky, ele poderá
+                Quando você contar algo importante para o Scum, ele poderá
                 aparecer aqui.
               </Text>
             </View>

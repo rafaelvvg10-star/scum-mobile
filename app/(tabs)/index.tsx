@@ -211,11 +211,11 @@ export default function HomeScreen() {
         },
       ]);
     } catch (error) {
-      console.error('Falha ao conectar com a API da Sky:', error);
+      console.error('Falha ao conectar com a API do Scum:', error);
 
       const mensagemDeErro =
         error instanceof TypeError
-          ? 'Sem conexão com a API da Sky. Verifique a rede e tente novamente.'
+          ? 'Sem conexão com a API do Scum. Verifique a rede e tente novamente.'
           : 'A API não conseguiu responder. Tente novamente.';
 
       setMessages((currentMessages) => [
@@ -268,7 +268,7 @@ export default function HomeScreen() {
 
             <View style={styles.headerActions}>
               <Pressable
-                accessibilityHint="Abre a lista de memórias essenciais da Sky"
+                accessibilityHint="Abre a lista de memórias essenciais do Scum"
                 accessibilityLabel="Memórias"
                 accessibilityRole="button"
                 onPress={() => router.push('/memorias' as Href)}
@@ -290,7 +290,7 @@ export default function HomeScreen() {
               <View style={styles.orbitMiddle}>
                 <View style={styles.avatar}>
                   <Image
-                    source={require('@/assets/images/sky-idle.png')}
+                    source={require('@/assets/images/scum-idle.png')}
                     resizeMode="contain"
                     style={styles.idleImage}
                   />
@@ -342,7 +342,7 @@ export default function HomeScreen() {
               isTyping ? (
                 <View style={[styles.messageRow, styles.skyMessageRow]}>
                   <View style={[styles.messageBubble, styles.skyBubble, styles.typingBubble]}>
-                    <Text style={styles.typingText}>Sky está pensando •••</Text>
+                    <Text style={styles.typingText}>Scum está pensando •••</Text>
                   </View>
                 </View>
               ) : null
@@ -355,7 +355,7 @@ export default function HomeScreen() {
                 value={input}
                 onChangeText={setInput}
                 onSubmitEditing={sendMessage}
-                placeholder="Converse com a Sky..."
+                placeholder="Converse com o Scum..."
                 placeholderTextColor="#7180A6"
                 selectionColor="#6EA8FF"
                 returnKeyType="send"

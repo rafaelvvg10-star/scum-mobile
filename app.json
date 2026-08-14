@@ -1,17 +1,18 @@
 {
   "expo": {
-    "name": "sky-mobile",
-    "slug": "sky-mobile",
+    "name": "Scum",
+    "slug": "scum",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "skymobile",
+    "scheme": "scum",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.kunh.scum",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
