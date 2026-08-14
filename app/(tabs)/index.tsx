@@ -299,7 +299,7 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.identityText}>
-              <Text style={styles.identityTitle}>Sua companheira de jornada</Text>
+              <Text style={styles.identityTitle}>Seu companheiro de jornada</Text>
               <Text style={styles.identitySubtitle}>
                 Magia, tecnologia e foco para construir algo extraordinário.
               </Text>
