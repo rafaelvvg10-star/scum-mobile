@@ -1,50 +1,52 @@
-# Welcome to your Expo app 👋
+# Scum Mobile
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Aplicativo Expo do Scum. A base nativa do modo Local usa `llama.rn` no próprio celular; o chat ainda continua ligado ao backend nesta etapa.
 
-## Get started
+## Modo Local experimental
 
-1. Install dependencies
+O modo Local é simples, offline e de emergência. Não há promessa de boa velocidade no Redmi Note 14.
 
-   ```bash
-   npm install
-   ```
+Configuração conservadora preparada:
 
-2. Start the app
+- CPU apenas (`n_gpu_layers: 0` e OpenCL desativado);
+- contexto de 1024 tokens;
+- saída máxima de 120 tokens;
+- uma geração por vez;
+- modelo sugerido: Qwen2.5 0.5B Instruct, GGUF Q4.
 
-   ```bash
-   npx expo start
-   ```
+O APK não contém nem baixa modelos. No menu, toque em **Escolher e importar GGUF** e selecione manualmente um `.gguf` na memória interna. O Android normalmente entrega um URI `content://`, que o `llama.rn` não abre diretamente. Após confirmação com tamanho e espaço livre, o Scum copia o arquivo em fluxo, com progresso, para o armazenamento privado persistente do app. A cópia não usa cache temporário.
 
-In the output, you'll find options to open the app in a
+Extensão, URI, tamanho, espaço livre e metadados GGUF são validados antes do carregamento. Uma cópia parcial ou inválida é removida automaticamente.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+**Descarregar modelo** libera somente o contexto da RAM. Depois disso, **Remover arquivo importado** apaga a cópia privada mediante nova confirmação; o arquivo original escolhido pelo usuário nunca é alterado. A referência e os metadados resumidos ficam no armazenamento seguro enquanto a cópia existir.
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+## Development build Android
 
-## Get a fresh project
+`llama.rn` contém código nativo e não funciona no Expo Go. Esta etapa precisa de uma development build Android própria.
 
-When you're ready, run:
+Não é necessário instalar Android Studio ou Android SDK. Para gerar a development build na nuvem, entre na conta Expo e envie o perfil definido em `eas.json`:
 
 ```bash
-npm run reset-project
+npm install
+npx eas-cli@latest login
+npx eas-cli@latest build --platform android --profile development
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Quando o EAS terminar, abra o link/QR da build no Redmi, baixe o APK de desenvolvimento e autorize a instalação. Depois, inicie o servidor JavaScript na mesma rede:
 
-## Learn more
+```bash
+npx expo start --dev-client
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+## Validar o carregamento no Redmi
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+1. Abra o menu `☰`.
+2. Toque em **Escolher e importar GGUF**.
+3. Selecione preferencialmente **Qwen2.5 0.5B Instruct GGUF Q4**.
+4. Confira o aviso de tamanho/espaço e confirme a importação.
+5. Aguarde o progresso chegar a 100% e a validação nativa terminar.
+6. Confirme o alerta **Modelo local carregado** e o estado `Local — nome.gguf • carregado` no menu.
+7. Toque em **Descarregar modelo** para liberar RAM.
+8. Se quiser apagar a cópia privada, use separadamente **Remover arquivo importado** e confirme.
 
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+A validação real de abertura pelo `llama.rn` só estará concluída depois desse teste no Redmi `arm64-v8a`. Esta etapa não gera APK final de produção.

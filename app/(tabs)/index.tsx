@@ -2,9 +2,11 @@ import { StatusBar } from 'expo-status-bar';
 import { type Href, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -18,6 +20,14 @@ import {
   API_CONFIGURATION_ERROR,
   API_URL,
 } from '@/config/api';
+import {
+  getStoredLocalModel,
+  type LocalModelImportDetails,
+  type LocalModelMetadata,
+  releaseLocalModel,
+  removeImportedLocalModel,
+  selectAndLoadLocalModel,
+} from '@/services/local-model';
 
 type MessageAuthor = 'sky' | 'user';
 
@@ -36,7 +46,7 @@ const INITIAL_MESSAGES: Message[] = [
   {
     id: 'sky-welcome',
     author: 'sky',
-    text: 'Olá, Kunh. Estou aqui. Esta é a primeira interface oficial do nosso Beta.',
+    text: 'Sinal recebido. A carcaça acordou. 💀',
   },
 ];
 
@@ -49,6 +59,11 @@ export default function HomeScreen() {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isMenuVisible, setIsMenuVisible] = useState(false);
+  const [localModel, setLocalModel] = useState<LocalModelMetadata | null>(null);
+  const [isLocalModelLoaded, setIsLocalModelLoaded] = useState(false);
+  const [isLocalModelBusy, setIsLocalModelBusy] = useState(false);
+  const [localModelImportProgress, setLocalModelImportProgress] = useState<number | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
 
   const scrollToLatestMessage = useCallback((animated = true) => {
@@ -60,6 +75,122 @@ export default function HomeScreen() {
 
     return () => cancelAnimationFrame(frame);
   }, [isTyping, messages, scrollToLatestMessage]);
+
+  useEffect(() => {
+    getStoredLocalModel().then(setLocalModel).catch(() => setLocalModel(null));
+  }, []);
+
+  const confirmLocalModelImport = useCallback(
+    ({ name, size, availableSpace }: LocalModelImportDetails) =>
+      new Promise<boolean>((resolve) => {
+        const formatSize = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+
+        Alert.alert(
+          'Importar modelo para o Scum?',
+          `${name}\n\nTamanho: ${formatSize(size)}\nEspaço livre: ${formatSize(availableSpace)}\n\nUma cópia persistente será criada no armazenamento privado do app. Ela não ficará no cache.`,
+          [
+            { text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Importar', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) }
+        );
+      }),
+    []
+  );
+
+  const chooseLocalModel = useCallback(async () => {
+    setIsLocalModelBusy(true);
+    setLocalModelImportProgress(null);
+    try {
+      const selection = await selectAndLoadLocalModel({
+        confirmImport: confirmLocalModelImport,
+        onProgress: setLocalModelImportProgress,
+      });
+
+      if (selection) {
+        setLocalModel(selection.metadata);
+        setIsLocalModelLoaded(true);
+        Alert.alert(
+          'Modelo local carregado',
+          `${selection.metadata.name}\n\nModo CPU de emergência: o desempenho pode ser lento.`
+        );
+      }
+    } catch (error) {
+      Alert.alert(
+        'Falha no modelo local',
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível carregar o arquivo GGUF.'
+      );
+    } finally {
+      setIsLocalModelBusy(false);
+      setLocalModelImportProgress(null);
+    }
+  }, [confirmLocalModelImport]);
+
+  const unloadLocalModel = useCallback(async () => {
+    setIsLocalModelBusy(true);
+    try {
+      await releaseLocalModel();
+      setIsLocalModelLoaded(false);
+      Alert.alert('Modelo descarregado', 'A memória RAM usada pelo modelo foi liberada.');
+    } catch (error) {
+      Alert.alert(
+        'Não foi possível descarregar',
+        error instanceof Error ? error.message : 'Tente novamente em instantes.'
+      );
+    } finally {
+      setIsLocalModelBusy(false);
+    }
+  }, []);
+
+  const confirmRemoveImportedModel = useCallback(() => {
+    Alert.alert(
+      'Remover arquivo importado?',
+      'O GGUF armazenado pelo Scum será apagado do espaço privado do app. O arquivo original escolhido por você não será alterado.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Remover',
+          style: 'destructive',
+          onPress: async () => {
+            setIsLocalModelBusy(true);
+            try {
+              await removeImportedLocalModel();
+              setLocalModel(null);
+              Alert.alert('Modelo removido', 'A cópia importada foi apagada.');
+            } catch (error) {
+              Alert.alert(
+                'Não foi possível remover',
+                error instanceof Error ? error.message : 'Tente novamente em instantes.'
+              );
+            } finally {
+              setIsLocalModelBusy(false);
+            }
+          },
+        },
+      ]
+    );
+  }, []);
+
+  const confirmClearConversation = useCallback(() => {
+    Alert.alert(
+      'Limpar conversa?',
+      'Isso apaga apenas as mensagens visíveis. As memórias permanecem intactas.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Limpar',
+          style: 'destructive',
+          onPress: () => {
+            setMessages([]);
+            setInput('');
+            setIsMenuVisible(false);
+          },
+        },
+      ]
+    );
+  }, []);
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -143,9 +274,18 @@ export default function HomeScreen() {
         style={styles.keyboardArea}>
         <View style={styles.header}>
           <View style={styles.brandRow}>
-            <View style={styles.miniAvatar}>
-              <Text style={styles.miniAvatarText}>S</Text>
-            </View>
+            <Pressable
+              accessibilityHint="Abre as opções do aplicativo"
+              accessibilityLabel="Abrir menu"
+              accessibilityRole="button"
+              hitSlop={8}
+              onPress={() => setIsMenuVisible(true)}
+              style={({ pressed }) => [
+                styles.menuButton,
+                pressed && styles.menuButtonPressed,
+              ]}>
+              <Text style={styles.menuIcon}>☰</Text>
+            </Pressable>
 
             <View style={styles.headerActions}>
               <Pressable
@@ -182,7 +322,7 @@ export default function HomeScreen() {
             <View style={styles.identityText}>
               <Text style={styles.identityTitle}>Seu companheiro de jornada</Text>
               <Text style={styles.identitySubtitle}>
-                Magia, tecnologia e foco para construir algo extraordinário.
+                Onde o bom senso vem para morrer em paz.
               </Text>
             </View>
           </View>
@@ -260,6 +400,105 @@ export default function HomeScreen() {
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setIsMenuVisible(false)}
+        statusBarTranslucent
+        transparent
+        visible={isMenuVisible}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Fechar menu"
+          onPress={() => setIsMenuVisible(false)}
+          style={styles.menuOverlay}>
+          <Pressable
+            accessibilityRole="menu"
+            onPress={(event) => event.stopPropagation()}
+            style={styles.menuPanel}>
+            <View style={styles.menuHeader}>
+              <Text style={styles.menuTitle}>Scum</Text>
+              <Pressable
+                accessibilityLabel="Fechar menu"
+                accessibilityRole="button"
+                hitSlop={8}
+                onPress={() => setIsMenuVisible(false)}>
+                <Text style={styles.menuClose}>×</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.menuItem}>
+              <Text style={styles.menuItemText}>Groq — padrão</Text>
+            </View>
+            <View style={styles.menuItem}>
+              <Text style={styles.menuItemText} numberOfLines={1}>
+                Local — {localModel?.name ?? 'nenhum modelo selecionado'}
+                {localModel ? (isLocalModelLoaded ? ' • carregado' : ' • descarregado') : ''}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityHint="Escolhe e valida um modelo GGUF da memória do celular"
+              accessibilityLabel="Escolher arquivo GGUF"
+              accessibilityRole="menuitem"
+              disabled={isLocalModelBusy}
+              onPress={chooseLocalModel}
+              style={({ pressed }) => [
+                styles.menuItem,
+                isLocalModelBusy && styles.menuItemDisabled,
+                pressed && styles.menuItemPressed,
+              ]}>
+              <Text style={styles.menuActionText}>
+                {localModelImportProgress !== null
+                  ? `Importando modelo • ${Math.round(localModelImportProgress * 100)}%`
+                  : isLocalModelBusy
+                    ? 'Processando modelo...'
+                    : 'Escolher e importar GGUF'}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityHint="Libera da memória RAM o modelo local carregado"
+              accessibilityLabel="Descarregar modelo"
+              accessibilityRole="menuitem"
+              disabled={!isLocalModelLoaded || isLocalModelBusy}
+              onPress={unloadLocalModel}
+              style={({ pressed }) => [
+                styles.menuItem,
+                (!isLocalModelLoaded || isLocalModelBusy) && styles.menuItemDisabled,
+                pressed && styles.menuItemPressed,
+              ]}>
+              <Text style={styles.menuActionText}>Descarregar modelo</Text>
+            </Pressable>
+            <Pressable
+              accessibilityHint="Remove apenas a cópia GGUF privada depois de descarregar o modelo"
+              accessibilityLabel="Remover arquivo importado"
+              accessibilityRole="menuitem"
+              disabled={!localModel || isLocalModelLoaded || isLocalModelBusy}
+              onPress={confirmRemoveImportedModel}
+              style={({ pressed }) => [
+                styles.menuItem,
+                (!localModel || isLocalModelLoaded || isLocalModelBusy) &&
+                  styles.menuItemDisabled,
+                pressed && styles.menuItemPressed,
+              ]}>
+              <Text style={styles.clearMenuItemText}>Remover arquivo importado</Text>
+            </Pressable>
+            <Pressable
+              accessibilityHint="Apaga apenas as mensagens visíveis, sem remover memórias"
+              accessibilityLabel="Limpar conversa"
+              accessibilityRole="menuitem"
+              disabled={isTyping}
+              onPress={confirmClearConversation}
+              style={({ pressed }) => [
+                styles.menuItem,
+                styles.clearMenuItem,
+                isTyping && styles.menuItemDisabled,
+                pressed && styles.menuItemPressed,
+              ]}>
+              <Text style={styles.clearMenuItemText}>Limpar conversa</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -281,20 +520,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  miniAvatar: {
+  menuButton: {
     width: 38,
     height: 38,
-    borderRadius: 19,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#132954',
+    backgroundColor: '#0D1730',
     borderWidth: 1,
-    borderColor: '#437DCF',
+    borderColor: '#29466F',
   },
-  miniAvatarText: {
-    color: '#EAF4FF',
-    fontSize: 18,
-    fontWeight: '800',
+  menuButtonPressed: {
+    opacity: 0.7,
+    transform: [{ scale: 0.97 }],
+  },
+  menuIcon: {
+    color: '#A8C9FA',
+    fontSize: 21,
+    lineHeight: 23,
   },
   betaBadge: {
     borderWidth: 1,
@@ -506,5 +749,68 @@ const styles = StyleSheet.create({
     fontSize: 22,
     lineHeight: 24,
     fontWeight: '700',
+  },
+  menuOverlay: {
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingTop: 66,
+    paddingHorizontal: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+  },
+  menuPanel: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#263657',
+    backgroundColor: '#090E20',
+    overflow: 'hidden',
+  },
+  menuHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: '#18233F',
+  },
+  menuTitle: {
+    flex: 1,
+    color: '#EDF3FF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  menuClose: {
+    color: '#A8C9FA',
+    fontSize: 26,
+    lineHeight: 28,
+  },
+  menuItem: {
+    minHeight: 50,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#151F37',
+  },
+  menuItemText: {
+    color: '#AAB7D4',
+    fontSize: 13,
+  },
+  menuActionText: {
+    color: '#A8C9FA',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  clearMenuItem: {
+    borderBottomWidth: 0,
+  },
+  clearMenuItemText: {
+    color: '#F0A6B2',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  menuItemDisabled: {
+    opacity: 0.45,
+  },
+  menuItemPressed: {
+    backgroundColor: '#111A31',
   },
 });

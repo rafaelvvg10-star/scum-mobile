@@ -29,6 +29,15 @@
     "plugins": [
       "expo-router",
       [
+        "llama.rn",
+        {
+          "enableEntitlements": false,
+          "forceCxx20": true,
+          "enableOpenCLAndHexagon": false
+        }
+      ],
+      "expo-secure-store",
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
