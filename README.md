@@ -50,3 +50,7 @@ npx expo start --dev-client
 8. Se quiser apagar a cópia privada, use separadamente **Remover arquivo importado** e confirme.
 
 A validação real de abertura pelo `llama.rn` só estará concluída depois desse teste no Redmi `arm64-v8a`. Esta etapa não gera APK final de produção.
+
+## Licença
+
+Este projeto está distribuído sob a licença MIT. Consulte o arquivo [LICENSE](LICENSE) para mais informações.
