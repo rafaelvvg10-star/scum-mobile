@@ -1,10 +1,14 @@
 import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
-import type {
-  LlamaContext,
-  RNLlamaOAICompatibleMessage,
-} from 'llama.rn';
+import type { LlamaContext, RNLlamaOAICompatibleMessage } from 'llama.rn';
+
+import {
+  fileUriToNativePath,
+  isFileUriInsideDirectory,
+  sanitizeLocalModelDiagnostic,
+  validateCopiedModel,
+} from './local-model-validation';
 
 export const LOCAL_MODEL_CONFIG = {
   nCtx: 1024,
@@ -123,6 +127,31 @@ async function copyToPrivateStorage(
     }
 
     await writer.close();
+
+    const handle = destination.open();
+    let header: Uint8Array;
+    try {
+      header = handle.readBytes(4);
+    } finally {
+      handle.close();
+    }
+
+    const validationError = validateCopiedModel({
+      expectedSize: size,
+      copiedSize: copied,
+      actualSize: destination.size,
+      header,
+    });
+
+    if (validationError) {
+      throw new LocalModelError(
+        'invalid_file',
+        validationError === 'invalid GGUF magic'
+          ? 'O arquivo selecionado não possui um cabeçalho GGUF válido.'
+          : 'A cópia do modelo ficou incompleta. Selecione o arquivo novamente.'
+      );
+    }
+
     onProgress?.(1);
     return destination;
   } catch (error) {
@@ -171,6 +200,69 @@ function classifyLoadError(error: unknown): LocalModelError {
   );
 }
 
+function logLoadFailure(stage: string, error: unknown) {
+  if (__DEV__) {
+    console.error(
+      `[LocalModel] Falha em ${stage}:`,
+      sanitizeLocalModelDiagnostic(error)
+    );
+  }
+}
+
+async function initializeLocalModel(modelUri: string) {
+  const llama = await import('llama.rn');
+  const nativePath = fileUriToNativePath(modelUri);
+  let loadStage = 'leitura dos metadados GGUF';
+  let removeNativeLogListener: (() => void) | null = null;
+  let disableNativeLog: (() => Promise<void>) | null = null;
+
+  try {
+    if (__DEV__) {
+      const subscription = llama.addNativeLogListener((level, text) => {
+        console.debug(
+          `[LocalModel][llama.rn][${level}]`,
+          sanitizeLocalModelDiagnostic(text)
+        );
+      });
+      removeNativeLogListener = subscription.remove;
+      await llama.toggleNativeLog(true);
+      disableNativeLog = () => llama.toggleNativeLog(false);
+    }
+
+    const rawInfo = await llama.loadLlamaModelInfo(nativePath);
+    const info = rawInfo as Record<string, unknown>;
+
+    if (!info || typeof info !== 'object' || Object.keys(info).length === 0) {
+      throw new LocalModelError(
+        'incompatible_model',
+        'O arquivo não contém metadados GGUF reconhecíveis.'
+      );
+    }
+
+    if (context) {
+      await context.release();
+      context = null;
+    }
+
+    loadStage = 'inicialização do contexto llama.rn';
+    context = await llama.initLlama({
+      model: nativePath,
+      n_ctx: LOCAL_MODEL_CONFIG.nCtx,
+      n_gpu_layers: LOCAL_MODEL_CONFIG.nGpuLayers,
+      n_parallel: LOCAL_MODEL_CONFIG.nParallel,
+      use_mlock: false,
+    });
+
+    return info;
+  } catch (error) {
+    logLoadFailure(loadStage, error);
+    throw error;
+  } finally {
+    removeNativeLogListener?.();
+    await disableNativeLog?.().catch(() => undefined);
+  }
+}
+
 async function persistMetadata(metadata: LocalModelMetadata) {
   await SecureStore.setItemAsync(MODEL_STORAGE_KEY, JSON.stringify(metadata));
 }
@@ -206,6 +298,35 @@ export function isLocalModelLoaded() {
   return context !== null;
 }
 
+export async function loadStoredLocalModel(): Promise<LocalModelSelection> {
+  if (operationInProgress) {
+    throw new LocalModelError('busy', 'Há uma operação local em andamento.');
+  }
+
+  const metadata = await getStoredLocalModel();
+  if (!metadata) {
+    throw new LocalModelError(
+      'not_loaded',
+      'Nenhum modelo importado foi encontrado. Importe um arquivo GGUF primeiro.'
+    );
+  }
+
+  operationInProgress = true;
+  try {
+    await initializeLocalModel(metadata.uri);
+    return { metadata, loaded: true };
+  } catch (error) {
+    if (context) {
+      await context.release().catch(() => undefined);
+      context = null;
+    }
+
+    throw classifyLoadError(error);
+  } finally {
+    operationInProgress = false;
+  }
+}
+
 export async function selectAndLoadLocalModel(
   options: LocalModelImportOptions
 ): Promise<LocalModelSelection | null> {
@@ -215,7 +336,7 @@ export async function selectAndLoadLocalModel(
 
   const result = await DocumentPicker.getDocumentAsync({
     type: 'application/octet-stream',
-    copyToCacheDirectory: false,
+    copyToCacheDirectory: true,
     multiple: false,
   });
 
@@ -224,97 +345,93 @@ export async function selectAndLoadLocalModel(
   }
 
   const asset = result.assets[0];
-  validateAsset(asset);
-  const source = new File(asset.uri);
-  const size = asset.size ?? source.size;
-
-  if (!Number.isFinite(size) || size <= 0) {
-    throw new LocalModelError(
-      'invalid_file',
-      'Não foi possível determinar o tamanho do arquivo GGUF.'
-    );
-  }
-
-  const availableSpace = Paths.availableDiskSpace;
-  if (availableSpace < size + STORAGE_SAFETY_MARGIN) {
-    throw new LocalModelError(
-      'insufficient_storage',
-      'Espaço insuficiente. Libere espaço interno antes de importar o modelo.'
-    );
-  }
-
-  const storedModel = await getStoredLocalModel();
-  if (storedModel) {
-    throw new LocalModelError(
-      'load_failed',
-      'Já existe um modelo importado. Descarregue e remova o arquivo atual antes de importar outro.'
-    );
-  }
-
-  const confirmed = await options.confirmImport({
-    name: asset.name,
-    size,
-    availableSpace,
-  });
-
-  if (!confirmed) {
-    return null;
-  }
-
-  operationInProgress = true;
-  let importedFile: File | null = null;
+  const pickerCacheCopy = isFileUriInsideDirectory(asset.uri, Paths.cache.uri)
+    ? new File(asset.uri)
+    : null;
 
   try {
-    importedFile = await copyToPrivateStorage(asset, size, options.onProgress);
-    const llama = await import('llama.rn');
-    const rawInfo = await llama.loadLlamaModelInfo(importedFile.uri);
-    const info = rawInfo as Record<string, unknown>;
+    validateAsset(asset);
+    const source = new File(asset.uri);
+    const size = asset.size ?? source.size;
 
-    if (!info || typeof info !== 'object' || Object.keys(info).length === 0) {
+    if (!Number.isFinite(size) || size <= 0) {
       throw new LocalModelError(
-        'incompatible_model',
-        'O arquivo não contém metadados GGUF reconhecíveis.'
+        'invalid_file',
+        'Não foi possível determinar o tamanho do arquivo GGUF.'
       );
     }
 
-    if (context) {
-      await context.release();
-      context = null;
+    const availableSpace = Paths.availableDiskSpace;
+    if (availableSpace < size + STORAGE_SAFETY_MARGIN) {
+      throw new LocalModelError(
+        'insufficient_storage',
+        'Espaço insuficiente. Libere espaço interno antes de importar o modelo.'
+      );
     }
 
-    context = await llama.initLlama({
-      model: importedFile.uri,
-      n_ctx: LOCAL_MODEL_CONFIG.nCtx,
-      n_gpu_layers: LOCAL_MODEL_CONFIG.nGpuLayers,
-      n_parallel: LOCAL_MODEL_CONFIG.nParallel,
-      use_mlock: false,
+    const storedModel = await getStoredLocalModel();
+    if (storedModel) {
+      throw new LocalModelError(
+        'load_failed',
+        'Já existe um modelo importado. Descarregue e remova o arquivo atual antes de importar outro.'
+      );
+    }
+
+    const confirmed = await options.confirmImport({
+      name: asset.name,
+      size,
+      availableSpace,
     });
 
-    const metadata: LocalModelMetadata = {
-      name: asset.name,
-      uri: importedFile.uri,
-      size,
-      mimeType: asset.mimeType ?? null,
-      architecture: readStringField(info, 'general.architecture'),
-      modelName: readStringField(info, 'general.name'),
-      selectedAt: new Date().toISOString(),
-    };
-
-    await persistMetadata(metadata);
-    return { metadata, loaded: true };
-  } catch (error) {
-    if (context) {
-      await context.release().catch(() => undefined);
-      context = null;
+    if (!confirmed) {
+      return null;
     }
 
-    if (importedFile?.exists) {
-      importedFile.delete();
-    }
+    operationInProgress = true;
+    let importedFile: File | null = null;
 
-    throw classifyLoadError(error);
+    try {
+      importedFile = await copyToPrivateStorage(
+        asset,
+        size,
+        options.onProgress
+      );
+      const info = await initializeLocalModel(importedFile.uri);
+
+      const metadata: LocalModelMetadata = {
+        name: asset.name,
+        uri: importedFile.uri,
+        size,
+        mimeType: asset.mimeType ?? null,
+        architecture: readStringField(info, 'general.architecture'),
+        modelName: readStringField(info, 'general.name'),
+        selectedAt: new Date().toISOString(),
+      };
+
+      await persistMetadata(metadata);
+      return { metadata, loaded: true };
+    } catch (error) {
+      if (context) {
+        await context.release().catch(() => undefined);
+        context = null;
+      }
+
+      if (importedFile?.exists) {
+        importedFile.delete();
+      }
+
+      throw classifyLoadError(error);
+    } finally {
+      operationInProgress = false;
+    }
   } finally {
-    operationInProgress = false;
+    if (pickerCacheCopy?.exists) {
+      try {
+        pickerCacheCopy.delete();
+      } catch (error) {
+        logLoadFailure('remoção da cópia temporária do DocumentPicker', error);
+      }
+    }
   }
 }
 

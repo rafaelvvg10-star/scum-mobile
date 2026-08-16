@@ -42,3 +42,9 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Arquivos locais e artefatos
+*.swp
+*.gguf
+*.apk
+*.aab

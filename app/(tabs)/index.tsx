@@ -17,15 +17,25 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
+  extractLocalCompletionText,
+  resolveChatTransport,
+  type ChatMode,
+  toLocalMessages,
+} from '@/services/chat-routing';
+import {
   API_CONFIGURATION_ERROR,
   API_URL,
 } from '@/config/api';
 import {
   getStoredLocalModel,
+  isLocalModelLoaded as getIsLocalModelLoaded,
+  loadStoredLocalModel,
+  LocalModelError,
   type LocalModelImportDetails,
   type LocalModelMetadata,
   releaseLocalModel,
   removeImportedLocalModel,
+  runLocalCompletion,
   selectAndLoadLocalModel,
 } from '@/services/local-model';
 
@@ -35,6 +45,7 @@ type Message = {
   id: string;
   author: MessageAuthor;
   text: string;
+  source?: ChatMode;
 };
 
 type ChatResponse = {
@@ -58,6 +69,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [input, setInput] = useState('');
+  const [chatMode, setChatMode] = useState<ChatMode>('groq');
   const [isTyping, setIsTyping] = useState(false);
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [localModel, setLocalModel] = useState<LocalModelMetadata | null>(null);
@@ -65,6 +77,7 @@ export default function HomeScreen() {
   const [isLocalModelBusy, setIsLocalModelBusy] = useState(false);
   const [localModelImportProgress, setLocalModelImportProgress] = useState<number | null>(null);
   const listRef = useRef<FlatList<Message>>(null);
+  const sendInProgressRef = useRef(false);
 
   const scrollToLatestMessage = useCallback((animated = true) => {
     listRef.current?.scrollToEnd({ animated });
@@ -77,7 +90,12 @@ export default function HomeScreen() {
   }, [isTyping, messages, scrollToLatestMessage]);
 
   useEffect(() => {
-    getStoredLocalModel().then(setLocalModel).catch(() => setLocalModel(null));
+    getStoredLocalModel()
+      .then((metadata) => {
+        setLocalModel(metadata);
+        setIsLocalModelLoaded(getIsLocalModelLoaded());
+      })
+      .catch(() => setLocalModel(null));
   }, []);
 
   const confirmLocalModelImport = useCallback(
@@ -144,6 +162,27 @@ export default function HomeScreen() {
     }
   }, []);
 
+  const loadImportedLocalModel = useCallback(async () => {
+    setIsLocalModelBusy(true);
+    try {
+      const selection = await loadStoredLocalModel();
+      setLocalModel(selection.metadata);
+      setIsLocalModelLoaded(true);
+      Alert.alert(
+        'Modelo local carregado',
+        `${selection.metadata.name}\n\nAgora você pode selecionar o modo Local.`
+      );
+    } catch (error) {
+      setIsLocalModelLoaded(false);
+      Alert.alert(
+        'Não foi possível carregar',
+        error instanceof Error ? error.message : 'Tente novamente em instantes.'
+      );
+    } finally {
+      setIsLocalModelBusy(false);
+    }
+  }, []);
+
   const confirmRemoveImportedModel = useCallback(() => {
     Alert.alert(
       'Remover arquivo importado?',
@@ -158,6 +197,7 @@ export default function HomeScreen() {
             try {
               await removeImportedLocalModel();
               setLocalModel(null);
+              setIsLocalModelLoaded(false);
               Alert.alert('Modelo removido', 'A cópia importada foi apagada.');
             } catch (error) {
               Alert.alert(
@@ -195,17 +235,44 @@ export default function HomeScreen() {
   const sendMessage = useCallback(async () => {
     const text = input.trim();
 
-    if (!text || isTyping) {
+    if (!text || isTyping || sendInProgressRef.current) {
       return;
     }
 
+    sendInProgressRef.current = true;
+    const userMessage: Message = {
+      id: createMessageId('user'),
+      author: 'user',
+      text,
+    };
+
     setMessages((currentMessages) => [
       ...currentMessages,
-      { id: createMessageId('user'), author: 'user', text },
+      userMessage,
     ]);
     setInput('');
     setIsTyping(true);
     try {
+      const transport = resolveChatTransport(chatMode, isLocalModelLoaded);
+
+      if (transport === 'local') {
+        const result = await runLocalCompletion(
+          toLocalMessages([...messages, userMessage])
+        );
+        const responseText = extractLocalCompletionText(result);
+
+        setMessages((currentMessages) => [
+          ...currentMessages,
+          {
+            id: createMessageId('sky'),
+            author: 'sky',
+            text: responseText,
+            source: 'local',
+          },
+        ]);
+        return;
+      }
+
       if (!API_URL) {
         setMessages((currentMessages) => [
           ...currentMessages,
@@ -213,6 +280,7 @@ export default function HomeScreen() {
             id: createMessageId('sky'),
             author: 'sky',
             text: API_CONFIGURATION_ERROR,
+            source: 'groq',
           },
         ]);
 
@@ -241,13 +309,27 @@ export default function HomeScreen() {
           id: createMessageId('sky'),
           author: 'sky',
           text: data.resposta.trim(),
+          source: 'groq',
         },
       ]);
     } catch (error) {
-      console.error('Falha ao conectar com a API do Scum:', error);
+      console.error(`Falha no modo ${chatMode} do Scum:`, error);
 
-      const mensagemDeErro =
-        error instanceof TypeError
+      const localContextMissing =
+        chatMode === 'local' &&
+        error instanceof LocalModelError &&
+        error.code === 'not_loaded';
+
+      if (localContextMissing) {
+        setIsLocalModelLoaded(false);
+      }
+
+      const mensagemDeErro = chatMode === 'local'
+        ? !isLocalModelLoaded || localContextMissing ||
+          (error instanceof Error && error.message === 'local_model_not_loaded')
+          ? 'O modelo local está descarregado. Use “Carregar modelo” no menu antes de enviar.'
+          : 'O modelo local não conseguiu responder. Tente novamente.'
+        : error instanceof TypeError
           ? 'Sem conexão com a API do Scum. Verifique a rede e tente novamente.'
           : 'A API não conseguiu responder. Tente novamente.';
 
@@ -257,12 +339,14 @@ export default function HomeScreen() {
           id: createMessageId('sky'),
           author: 'sky',
           text: mensagemDeErro,
+          source: chatMode,
         },
       ]);
     } finally {
+      sendInProgressRef.current = false;
       setIsTyping(false);
     }
-  }, [input, isTyping]);
+  }, [chatMode, input, isLocalModelLoaded, isTyping, messages]);
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'right', 'bottom', 'left']}>
@@ -355,6 +439,11 @@ export default function HomeScreen() {
                     <Text style={[styles.messageText, !isSky && styles.userMessageText]}>
                       {item.text}
                     </Text>
+                    {isSky && item.source ? (
+                      <Text style={styles.messageSource}>
+                        Resposta: {item.source === 'local' ? 'Local' : 'Groq'}
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
               );
@@ -371,6 +460,10 @@ export default function HomeScreen() {
           />
 
           <View style={styles.composerArea}>
+            <Text style={styles.activeModeText}>
+              Modo ativo: {chatMode === 'local' ? 'Local' : 'Groq'}
+              {chatMode === 'local' && !isLocalModelLoaded ? ' • modelo descarregado' : ''}
+            </Text>
             <View style={styles.inputContainer}>
               <TextInput
                 value={input}
@@ -427,15 +520,64 @@ export default function HomeScreen() {
               </Pressable>
             </View>
 
-            <View style={styles.menuItem}>
-              <Text style={styles.menuItemText}>Groq — padrão</Text>
-            </View>
-            <View style={styles.menuItem}>
-              <Text style={styles.menuItemText} numberOfLines={1}>
-                Local — {localModel?.name ?? 'nenhum modelo selecionado'}
+            <Pressable
+              accessibilityLabel="Usar modo Groq"
+              accessibilityRole="radio"
+              accessibilityState={{ checked: chatMode === 'groq' }}
+              onPress={() => setChatMode('groq')}
+              style={({ pressed }) => [
+                styles.menuItem,
+                chatMode === 'groq' && styles.modeMenuItemActive,
+                pressed && styles.menuItemPressed,
+              ]}>
+              <Text
+                style={[
+                  styles.menuItemText,
+                  chatMode === 'groq' && styles.modeMenuTextActive,
+                ]}>
+                {chatMode === 'groq' ? '✓ ' : ''}Groq — online
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Usar modo Local"
+              accessibilityRole="radio"
+              accessibilityState={{
+                checked: chatMode === 'local',
+                disabled: !isLocalModelLoaded,
+              }}
+              disabled={!isLocalModelLoaded}
+              onPress={() => setChatMode('local')}
+              style={({ pressed }) => [
+                styles.menuItem,
+                chatMode === 'local' && styles.modeMenuItemActive,
+                !isLocalModelLoaded && styles.menuItemDisabled,
+                pressed && styles.menuItemPressed,
+              ]}>
+              <Text
+                style={[
+                  styles.menuItemText,
+                  chatMode === 'local' && styles.modeMenuTextActive,
+                ]}
+                numberOfLines={1}>
+                {chatMode === 'local' ? '✓ ' : ''}Local —{' '}
+                {localModel?.name ?? 'nenhum modelo importado'}
                 {localModel ? (isLocalModelLoaded ? ' • carregado' : ' • descarregado') : ''}
               </Text>
-            </View>
+            </Pressable>
+            <Pressable
+              accessibilityHint="Carrega na memória RAM o arquivo GGUF já importado"
+              accessibilityLabel="Carregar modelo importado"
+              accessibilityRole="menuitem"
+              disabled={!localModel || isLocalModelLoaded || isLocalModelBusy}
+              onPress={loadImportedLocalModel}
+              style={({ pressed }) => [
+                styles.menuItem,
+                (!localModel || isLocalModelLoaded || isLocalModelBusy) &&
+                  styles.menuItemDisabled,
+                pressed && styles.menuItemPressed,
+              ]}>
+              <Text style={styles.menuActionText}>Carregar modelo</Text>
+            </Pressable>
             <Pressable
               accessibilityHint="Escolhe e valida um modelo GGUF da memória do celular"
               accessibilityLabel="Escolher arquivo GGUF"
@@ -687,6 +829,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  messageSource: {
+    color: '#7180A6',
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 6,
+  },
   userMessageText: {
     color: '#FFFFFF',
   },
@@ -706,6 +854,13 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#151F37',
     backgroundColor: '#090E20',
+  },
+  activeModeText: {
+    color: '#7180A6',
+    fontSize: 10,
+    fontWeight: '700',
+    marginBottom: 7,
+    paddingHorizontal: 2,
   },
   inputContainer: {
     flexDirection: 'row',
@@ -793,6 +948,15 @@ const styles = StyleSheet.create({
   menuItemText: {
     color: '#AAB7D4',
     fontSize: 13,
+  },
+  modeMenuItemActive: {
+    backgroundColor: '#101D38',
+    borderLeftColor: '#6EA8FF',
+    borderLeftWidth: 3,
+  },
+  modeMenuTextActive: {
+    color: '#DCEAFF',
+    fontWeight: '800',
   },
   menuActionText: {
     color: '#A8C9FA',
