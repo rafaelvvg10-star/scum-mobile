@@ -1,11 +1,13 @@
 import { StatusBar } from 'expo-status-bar';
 import { type Href, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   Alert,
+  Animated,
   FlatList,
-  Image,
   KeyboardAvoidingView,
+  type ListRenderItemInfo,
   Modal,
   Platform,
   Pressable,
@@ -65,6 +67,90 @@ function createMessageId(author: MessageAuthor) {
   return `${author}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+const ChatMessage = memo(function ChatMessage({
+  message,
+  reduceMotion,
+}: {
+  message: Message;
+  reduceMotion: boolean;
+}) {
+  const isSky = message.author === 'sky';
+  const entrance = useRef(new Animated.Value(reduceMotion ? 1 : 0)).current;
+
+  useEffect(() => {
+    if (reduceMotion) {
+      entrance.setValue(1);
+      return;
+    }
+
+    Animated.timing(entrance, {
+      toValue: 1,
+      duration: isSky ? 220 : 180,
+      useNativeDriver: true,
+    }).start();
+  }, [entrance, isSky, reduceMotion]);
+
+  return (
+    <Animated.View
+      style={[
+        styles.messageRow,
+        isSky ? styles.skyMessageRow : styles.userMessageRow,
+        {
+          opacity: entrance,
+          transform: [
+            {
+              translateY: entrance.interpolate({
+                inputRange: [0, 1],
+                outputRange: [isSky ? 0 : 8, 0],
+              }),
+            },
+          ],
+        },
+      ]}>
+      <Text
+        selectable
+        style={[styles.messageText, !isSky && styles.userMessageText]}>
+        {message.text}
+      </Text>
+    </Animated.View>
+  );
+});
+
+function TypingIndicator({ reduceMotion }: { reduceMotion: boolean }) {
+  const pulse = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (reduceMotion) {
+      pulse.setValue(1);
+      return;
+    }
+
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 0.32,
+          duration: 520,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 520,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    animation.start();
+    return () => animation.stop();
+  }, [pulse, reduceMotion]);
+
+  return (
+    <View style={[styles.messageRow, styles.skyMessageRow]}>
+      <Animated.View style={[styles.typingDot, { opacity: pulse }]} />
+    </View>
+  );
+}
+
 export default function HomeScreen() {
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
@@ -76,6 +162,7 @@ export default function HomeScreen() {
   const [isLocalModelLoaded, setIsLocalModelLoaded] = useState(false);
   const [isLocalModelBusy, setIsLocalModelBusy] = useState(false);
   const [localModelImportProgress, setLocalModelImportProgress] = useState<number | null>(null);
+  const [reduceMotion, setReduceMotion] = useState(false);
   const listRef = useRef<FlatList<Message>>(null);
   const sendInProgressRef = useRef(false);
 
@@ -97,6 +184,23 @@ export default function HomeScreen() {
       })
       .catch(() => setLocalModel(null));
   }, []);
+
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
+    const subscription = AccessibilityInfo.addEventListener(
+      'reduceMotionChanged',
+      setReduceMotion
+    );
+
+    return () => subscription.remove();
+  }, []);
+
+  const renderMessage = useCallback(
+    ({ item }: ListRenderItemInfo<Message>) => (
+      <ChatMessage message={item} reduceMotion={reduceMotion} />
+    ),
+    [reduceMotion]
+  );
 
   const confirmLocalModelImport = useCallback(
     ({ name, size, availableSpace }: LocalModelImportDetails) =>
@@ -350,66 +454,27 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'right', 'bottom', 'left']}>
-      <StatusBar style="light" backgroundColor="#000000" />
+      <StatusBar style="light" backgroundColor="#050507" />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
         style={styles.keyboardArea}>
         <View style={styles.header}>
-          <View style={styles.brandRow}>
-            <Pressable
-              accessibilityHint="Abre as opções do aplicativo"
-              accessibilityLabel="Abrir menu"
-              accessibilityRole="button"
-              hitSlop={8}
-              onPress={() => setIsMenuVisible(true)}
-              style={({ pressed }) => [
-                styles.menuButton,
-                pressed && styles.menuButtonPressed,
-              ]}>
-              <Text style={styles.menuIcon}>☰</Text>
-            </Pressable>
+          <Pressable
+            accessibilityHint="Abre as opções do aplicativo"
+            accessibilityLabel="Abrir menu"
+            accessibilityRole="button"
+            hitSlop={10}
+            onPress={() => setIsMenuVisible(true)}
+            style={({ pressed }) => [
+              styles.menuButton,
+              pressed && styles.menuButtonPressed,
+            ]}>
+            <Text style={styles.menuIcon}>☰</Text>
+          </Pressable>
 
-            <View style={styles.headerActions}>
-              <Pressable
-                accessibilityHint="Abre a lista de memórias essenciais do Scum"
-                accessibilityLabel="Memórias"
-                accessibilityRole="button"
-                onPress={() => router.push('/memorias' as Href)}
-                style={({ pressed }) => [
-                  styles.memoriesButton,
-                  pressed && styles.memoriesButtonPressed,
-                ]}>
-                <Text style={styles.memoriesButtonText}>Memórias</Text>
-              </Pressable>
-
-              <View style={styles.betaBadge}>
-                <Text style={styles.betaText}>BETA</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.identityArea}>
-            <View style={styles.orbitOuter}>
-              <View style={styles.orbitMiddle}>
-                <View style={styles.avatar}>
-                  <Image
-                    source={require('@/assets/images/scum-idle.png')}
-                    resizeMode="contain"
-                    style={styles.idleImage}
-                  />
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.identityText}>
-              <Text style={styles.identityTitle}>Seu companheiro de jornada</Text>
-              <Text style={styles.identitySubtitle}>
-                Onde o bom senso vem para morrer em paz.
-              </Text>
-            </View>
-          </View>
+          <Text style={styles.betaText}>BETA</Text>
         </View>
 
         <View style={styles.chatPanel}>
@@ -422,46 +487,15 @@ export default function HomeScreen() {
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             contentContainerStyle={styles.messageList}
             onLayout={() => scrollToLatestMessage(false)}
-            renderItem={({ item }) => {
-              const isSky = item.author === 'sky';
-
-              return (
-                <View
-                  style={[
-                    styles.messageRow,
-                    isSky ? styles.skyMessageRow : styles.userMessageRow,
-                  ]}>
-                  <View
-                    style={[
-                      styles.messageBubble,
-                      isSky ? styles.skyBubble : styles.userBubble,
-                    ]}>
-                    <Text style={[styles.messageText, !isSky && styles.userMessageText]}>
-                      {item.text}
-                    </Text>
-                    {isSky && item.source ? (
-                      <Text style={styles.messageSource}>
-                        Resposta: {item.source === 'local' ? 'Local' : 'Groq'}
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-              );
-            }}
+            renderItem={renderMessage}
             ListFooterComponent={
-              isTyping ? (
-                <View style={[styles.messageRow, styles.skyMessageRow]}>
-                  <View style={[styles.messageBubble, styles.skyBubble, styles.typingBubble]}>
-                    <Text style={styles.typingText}>Scum está pensando •••</Text>
-                  </View>
-                </View>
-              ) : null
+              isTyping ? <TypingIndicator reduceMotion={reduceMotion} /> : null
             }
           />
 
           <View style={styles.composerArea}>
             <Text style={styles.activeModeText}>
-              Modo ativo: {chatMode === 'local' ? 'Local' : 'Groq'}
+              {chatMode === 'local' ? 'Local' : 'Groq'}
               {chatMode === 'local' && !isLocalModelLoaded ? ' • modelo descarregado' : ''}
             </Text>
             <View style={styles.inputContainer}>
@@ -470,8 +504,8 @@ export default function HomeScreen() {
                 onChangeText={setInput}
                 onSubmitEditing={sendMessage}
                 placeholder="Converse com o Scum..."
-                placeholderTextColor="#7180A6"
-                selectionColor="#6EA8FF"
+                placeholderTextColor="#858A98"
+                selectionColor="#4285FF"
                 returnKeyType="send"
                 maxLength={1200}
                 multiline
@@ -519,6 +553,21 @@ export default function HomeScreen() {
                 <Text style={styles.menuClose}>×</Text>
               </Pressable>
             </View>
+
+            <Pressable
+              accessibilityHint="Abre a lista de memórias essenciais do Scum"
+              accessibilityLabel="Memórias"
+              accessibilityRole="menuitem"
+              onPress={() => {
+                setIsMenuVisible(false);
+                router.push('/memorias' as Href);
+              }}
+              style={({ pressed }) => [
+                styles.menuItem,
+                pressed && styles.menuItemPressed,
+              ]}>
+              <Text style={styles.menuActionText}>Memórias</Text>
+            </Pressable>
 
             <Pressable
               accessibilityLabel="Usar modo Groq"
@@ -648,260 +697,139 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#050507',
   },
   keyboardArea: {
     flex: 1,
   },
   header: {
-    paddingHorizontal: 20,
-    paddingTop: 6,
-    paddingBottom: 16,
-  },
-  brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 52,
+    paddingHorizontal: 18,
+    paddingTop: 2,
+    paddingBottom: 4,
   },
   menuButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+    width: 40,
+    height: 40,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#0D1730',
-    borderWidth: 1,
-    borderColor: '#29466F',
   },
   menuButtonPressed: {
-    opacity: 0.7,
-    transform: [{ scale: 0.97 }],
+    opacity: 0.62,
+    transform: [{ scale: 0.94 }],
   },
   menuIcon: {
-    color: '#A8C9FA',
-    fontSize: 21,
-    lineHeight: 23,
-  },
-  betaBadge: {
-    borderWidth: 1,
-    borderColor: '#314B7A',
-    backgroundColor: '#0D1730',
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginLeft: 'auto',
-  },
-  memoriesButton: {
-    minHeight: 34,
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#29466F',
-    backgroundColor: '#0C1930',
-    borderRadius: 999,
-    paddingHorizontal: 11,
-  },
-  memoriesButtonPressed: {
-    opacity: 0.72,
-    transform: [{ scale: 0.97 }],
-  },
-  memoriesButtonText: {
-    color: '#A8C9FA',
-    fontSize: 11,
-    fontWeight: '700',
+    color: '#4285FF',
+    fontSize: 28,
+    lineHeight: 30,
   },
   betaText: {
-    color: '#8EBBFF',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1.4,
-  },
-  identityArea: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 18,
-  },
-  orbitOuter: {
-    width: 104,
-    height: 104,
-    borderRadius: 52,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(91, 151, 255, 0.24)',
-  },
-  orbitMiddle: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(96, 223, 255, 0.22)',
-    backgroundColor: 'rgba(16, 34, 72, 0.5)',
-  },
-  avatar: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#16376D',
-    borderWidth: 1,
-    borderColor: '#69A8FF',
-    overflow: 'hidden',
-  },
-  idleImage: {
-    width: 70,
-    height: 70,
-  },
-  identityText: {
-    flex: 1,
-    marginLeft: 16,
-  },
-  identityTitle: {
-    color: '#EAF1FF',
-    fontSize: 17,
-    lineHeight: 22,
-    fontWeight: '800',
-  },
-  identitySubtitle: {
-    color: '#8290B1',
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: 5,
+    color: '#4285FF',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 1.2,
+    marginRight: 4,
   },
   chatPanel: {
     flex: 1,
-    marginHorizontal: 12,
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    backgroundColor: '#000000',
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    borderColor: '#18233F',
-    overflow: 'hidden',
+    backgroundColor: '#050507',
   },
   chatList: {
     flex: 1,
   },
   messageList: {
-    paddingHorizontal: 14,
-    paddingTop: 18,
-    paddingBottom: 16,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 20,
   },
   messageRow: {
     flexDirection: 'row',
-    marginBottom: 13,
+    marginBottom: 24,
   },
   skyMessageRow: {
     justifyContent: 'flex-start',
-    paddingRight: 45,
+    paddingRight: 36,
   },
   userMessageRow: {
     justifyContent: 'flex-end',
-    paddingLeft: 48,
-  },
-  messageBubble: {
-    maxWidth: '100%',
-    borderRadius: 18,
-    paddingHorizontal: 13,
-    paddingVertical: 10,
-  },
-  skyBubble: {
-    flexShrink: 1,
-    backgroundColor: '#0C111D',
-    borderTopLeftRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(92, 82, 170, 0.28)',
-  },
-  userBubble: {
-    backgroundColor: '#243F92',
-    experimental_backgroundImage:
-      'linear-gradient(135deg, #173F82 0%, #40256F 100%)',
-    borderBottomRightRadius: 6,
+    paddingLeft: 44,
   },
   messageText: {
-    color: '#D9E1F2',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  messageSource: {
-    color: '#7180A6',
-    fontSize: 10,
-    fontWeight: '700',
-    marginTop: 6,
+    flexShrink: 1,
+    color: '#D8DCE6',
+    fontSize: 16,
+    lineHeight: 24,
   },
   userMessageText: {
-    color: '#FFFFFF',
+    color: '#4285FF',
+    textAlign: 'right',
   },
-  typingBubble: {
-    paddingVertical: 9,
-  },
-  typingText: {
-    color: '#7888AB',
-    fontSize: 12,
-    fontStyle: 'italic',
+  typingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4285FF',
   },
   composerArea: {
     flexShrink: 0,
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: Platform.OS === 'ios' ? 9 : 12,
-    borderTopWidth: 1,
-    borderTopColor: '#151F37',
-    backgroundColor: '#090E20',
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: Platform.OS === 'ios' ? 8 : 10,
+    backgroundColor: '#050507',
   },
   activeModeText: {
-    color: '#7180A6',
-    fontSize: 10,
-    fontWeight: '700',
-    marginBottom: 7,
-    paddingHorizontal: 2,
+    color: '#4285FF',
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 6,
+    paddingHorizontal: 10,
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    minHeight: 50,
-    borderRadius: 18,
+    minHeight: 52,
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: '#263657',
-    backgroundColor: '#0D1529',
-    paddingLeft: 14,
+    borderColor: '#A7ABB5',
+    backgroundColor: '#11131A',
+    paddingLeft: 16,
     paddingRight: 6,
-    paddingVertical: 5,
+    paddingVertical: 6,
   },
   input: {
     flex: 1,
-    minHeight: 38,
+    minHeight: 39,
     maxHeight: 112,
-    color: '#EDF3FF',
-    fontSize: 14,
-    lineHeight: 19,
-    paddingTop: 9,
+    color: '#F2F4F8',
+    fontSize: 15,
+    lineHeight: 21,
+    paddingTop: 8,
     paddingBottom: 8,
   },
   sendButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 13,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#3478E5',
+    borderWidth: 1,
+    borderColor: '#4285FF',
+    backgroundColor: '#11131A',
   },
   sendButtonDisabled: {
-    backgroundColor: '#1A2945',
+    borderColor: '#4A4E58',
+    opacity: 0.48,
   },
   sendButtonPressed: {
-    opacity: 0.78,
-    transform: [{ scale: 0.97 }],
+    backgroundColor: '#18213A',
+    transform: [{ scale: 0.92 }],
   },
   sendIcon: {
-    color: '#FFFFFF',
-    fontSize: 22,
+    color: '#4285FF',
+    fontSize: 24,
     lineHeight: 24,
     fontWeight: '700',
   },
