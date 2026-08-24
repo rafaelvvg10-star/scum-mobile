@@ -17,10 +17,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
+  buildLocalMessages,
   extractLocalCompletionText,
   resolveChatTransport,
   type ChatMode,
-  toLocalMessages,
 } from '@/services/chat-routing';
 import {
   API_CONFIGURATION_ERROR,
@@ -257,7 +257,7 @@ export default function HomeScreen() {
 
       if (transport === 'local') {
         const result = await runLocalCompletion(
-          toLocalMessages([...messages, userMessage])
+          buildLocalMessages(messages, userMessage)
         );
         const responseText = extractLocalCompletionText(result);
 
