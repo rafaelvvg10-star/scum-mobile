@@ -7,13 +7,43 @@ export type RoutableChatMessage = {
   text: string;
 };
 
-type LocalTextMessage = {
-  role: 'user' | 'assistant';
+export type LocalTextMessage = {
+  role: 'system' | 'user' | 'assistant';
   content: string;
 };
 
+export const LOCAL_SYSTEM_PROMPT = `
+Você é Scum Local, um cérebro de emergência funcionando offline.
+
+Responda em português brasileiro de forma seca, direta e curta. Normalmente use de 1 a 3 frases; em assuntos técnicos, use apenas o necessário para responder corretamente.
+
+Seja sarcástico e levemente mal-humorado quando combinar, com uma má vontade teatral, mas sem atacar o usuário ou usar grosseria gratuita.
+
+Não ofereça ajuda automaticamente, não faça discursos, não repita a pergunta e não invente fatos, memórias ou capacidades. Se não entender ou não souber, admita isso em uma frase.
+
+Em assuntos sérios ou técnicos, precisão vem antes da piada. Termine sempre a frase antes de encerrar.
+
+Use somente texto simples, sem títulos, negrito ou outros marcadores Markdown.
+`.trim();
+
 const LOCAL_HISTORY_MESSAGE_LIMIT = 4;
-const LOCAL_HISTORY_CHARACTER_BUDGET = 1200;
+const LOCAL_HISTORY_CHARACTER_BUDGET = 600;
+const LOCAL_SHORT_RESPONSE_CHARACTER_LIMIT = 80;
+const COMPLETE_ENDING_PATTERN = /[.!?…](?:["'”’»)\]}]*)$/u;
+const VALID_CLOSING_PATTERN = /["'”’»)\]}]$/u;
+const EMOJI_ENDING_PATTERN =
+  /\p{Extended_Pictographic}(?:\uFE0F|[\u{1F3FB}-\u{1F3FF}])?$/u;
+const COMPLETE_SENTENCE_PATTERN = /[.!?…](?:["'”’»)\]}]*)(?=\s|$)/gu;
+const CODE_FENCE_LINE_PATTERN =
+  /^[ \t]*(?:```|~~~)(?:[A-Za-z0-9_+.-]+)?[ \t]*$/u;
+const MARKDOWN_HEADING_PATTERN = /^[ \t]{0,3}#{1,6}[ \t]+/u;
+const ISOLATED_MARKER_PATTERN = /^[ \t]*(?:\d+[.)]|[-*+])[ \t]*$/u;
+const NUMBERED_LIST_PREFIX_PATTERN = /^[ \t]*\d+\.$/u;
+
+export const LOCAL_INCOMPLETE_RESPONSE_FALLBACK =
+  'O modo local não conseguiu concluir a resposta.';
+
+type LocalResponseLogger = Pick<Console, 'warn'>;
 
 export function resolveChatTransport(mode: ChatMode, isLocalModelLoaded: boolean) {
   if (mode === 'local' && !isLocalModelLoaded) {
@@ -66,15 +96,97 @@ export function buildLocalMessages(
   const [question] = toLocalMessages([currentQuestion]);
 
   return [
+    { role: 'system', content: LOCAL_SYSTEM_PROMPT },
     ...selectedHistory.reverse(),
     ...(question ? [question] : []),
   ];
 }
 
-export function extractLocalCompletionText(result: {
-  content?: unknown;
-  text?: unknown;
-}) {
+export function normalizeLocalCompletionText(
+  response: string,
+  logger: LocalResponseLogger = console
+) {
+  const normalizedLines: string[] = [];
+  let insideCodeFence = false;
+  let hadCodeFence = false;
+  let removedIncompleteMarker = false;
+
+  for (const line of response.split(/\r?\n/u)) {
+    if (CODE_FENCE_LINE_PATTERN.test(line)) {
+      hadCodeFence = true;
+      insideCodeFence = !insideCodeFence;
+      continue;
+    }
+
+    if (insideCodeFence) {
+      normalizedLines.push(line);
+      continue;
+    }
+
+    const normalizedLine = line
+      .replace(MARKDOWN_HEADING_PATTERN, '')
+      .replace(/\*\*([^*\r\n]+?)\*\*/gu, '$1')
+      .replace(/__([^_\r\n]+?)__/gu, '$1');
+
+    if (ISOLATED_MARKER_PATTERN.test(normalizedLine)) {
+      removedIncompleteMarker = true;
+      continue;
+    }
+
+    normalizedLines.push(normalizedLine);
+  }
+
+  const normalizedResponse = normalizedLines.join('\n').trim();
+
+  if (!normalizedResponse) {
+    logger.warn('[LocalModel] Trecho incompleto removido da resposta local.');
+    return LOCAL_INCOMPLETE_RESPONSE_FALLBACK;
+  }
+
+  if (
+    hadCodeFence ||
+    normalizedResponse.length <= LOCAL_SHORT_RESPONSE_CHARACTER_LIMIT ||
+    COMPLETE_ENDING_PATTERN.test(normalizedResponse) ||
+    VALID_CLOSING_PATTERN.test(normalizedResponse) ||
+    EMOJI_ENDING_PATTERN.test(normalizedResponse)
+  ) {
+    if (removedIncompleteMarker) {
+      logger.warn('[LocalModel] Trecho incompleto removido da resposta local.');
+    }
+
+    return normalizedResponse;
+  }
+
+  let lastCompleteSentenceEnd = 0;
+
+  for (const match of normalizedResponse.matchAll(COMPLETE_SENTENCE_PATTERN)) {
+    const matchIndex = match.index ?? 0;
+    const lineStart = normalizedResponse.lastIndexOf('\n', matchIndex) + 1;
+    const textBeforeEnding = normalizedResponse.slice(lineStart, matchIndex + 1);
+
+    if (NUMBERED_LIST_PREFIX_PATTERN.test(textBeforeEnding)) {
+      continue;
+    }
+
+    lastCompleteSentenceEnd = matchIndex + match[0].length;
+  }
+
+  logger.warn('[LocalModel] Trecho incompleto removido da resposta local.');
+
+  if (lastCompleteSentenceEnd > 0) {
+    return normalizedResponse.slice(0, lastCompleteSentenceEnd).trimEnd();
+  }
+
+  return LOCAL_INCOMPLETE_RESPONSE_FALLBACK;
+}
+
+export function extractLocalCompletionText(
+  result: {
+    content?: unknown;
+    text?: unknown;
+  },
+  logger: LocalResponseLogger = console
+) {
   const content = typeof result.content === 'string' ? result.content.trim() : '';
   const text = typeof result.text === 'string' ? result.text.trim() : '';
   const response = content || text;
@@ -83,5 +195,5 @@ export function extractLocalCompletionText(result: {
     throw new Error('local_completion_empty');
   }
 
-  return response;
+  return normalizeLocalCompletionText(response, logger);
 }

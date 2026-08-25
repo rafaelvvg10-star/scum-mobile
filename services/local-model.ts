@@ -4,6 +4,10 @@ import * as SecureStore from 'expo-secure-store';
 import type { LlamaContext, RNLlamaOAICompatibleMessage } from 'llama.rn';
 
 import {
+  LOCAL_MAX_OUTPUT_TOKENS,
+  runLocalGeneration,
+} from './local-completion';
+import {
   fileUriToNativePath,
   isFileUriInsideDirectory,
   sanitizeLocalModelDiagnostic,
@@ -13,7 +17,7 @@ import {
 export const LOCAL_MODEL_CONFIG = {
   nCtx: 1024,
   nGpuLayers: 0,
-  maxOutputTokens: 120,
+  maxOutputTokens: LOCAL_MAX_OUTPUT_TOKENS,
   nParallel: 1,
 } as const;
 
@@ -504,10 +508,7 @@ export async function runLocalCompletion(
 
   operationInProgress = true;
   try {
-    return await context.completion({
-      messages,
-      n_predict: LOCAL_MODEL_CONFIG.maxOutputTokens,
-    });
+    return await runLocalGeneration(context, messages);
   } finally {
     operationInProgress = false;
   }
