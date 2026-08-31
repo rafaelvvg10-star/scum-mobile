@@ -20,14 +20,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   buildLocalMessages,
+  executeChatTransport,
   extractLocalCompletionText,
   resolveChatTransport,
   type ChatMode,
 } from '@/services/chat-routing';
-import {
-  API_CONFIGURATION_ERROR,
-  API_URL,
-} from '@/config/api';
+import { scumApi, toSafeApiMessage } from '@/services/scum-api';
 import {
   getStoredLocalModel,
   isLocalModelLoaded as getIsLocalModelLoaded,
@@ -48,11 +46,6 @@ type Message = {
   author: MessageAuthor;
   text: string;
   source?: ChatMode;
-};
-
-type ChatResponse = {
-  pergunta: string;
-  resposta: string;
 };
 
 const INITIAL_MESSAGES: Message[] = [
@@ -359,66 +352,23 @@ export default function HomeScreen() {
     try {
       const transport = resolveChatTransport(chatMode, isLocalModelLoaded);
 
-      if (transport === 'local') {
-        const result = await runLocalCompletion(
-          buildLocalMessages(messages, userMessage)
-        );
-        const responseText = extractLocalCompletionText(result);
-
-        setMessages((currentMessages) => [
-          ...currentMessages,
-          {
-            id: createMessageId('sky'),
-            author: 'sky',
-            text: responseText,
-            source: 'local',
-          },
-        ]);
-        return;
-      }
-
-      if (!API_URL) {
-        setMessages((currentMessages) => [
-          ...currentMessages,
-          {
-            id: createMessageId('sky'),
-            author: 'sky',
-            text: API_CONFIGURATION_ERROR,
-            source: 'groq',
-          },
-        ]);
-
-        return;
-      }
-
-      const url = `${API_URL}/chat?pergunta=${encodeURIComponent(text)}`;
-      const response = await fetch(url, { method: 'POST' });
-
-      if (!response.ok) {
-        throw new Error(`A API respondeu com o status ${response.status}`);
-      }
-
-      const data: ChatResponse = await response.json();
-
-      if (
-        typeof data?.resposta !== 'string' ||
-        !data.resposta.trim()
-      ) {
-        throw new Error('A API retornou uma resposta inválida');
-      }
+      const responseText = await executeChatTransport(transport, {
+        local: async () => extractLocalCompletionText(
+          await runLocalCompletion(buildLocalMessages(messages, userMessage))
+        ),
+        online: async () => (await scumApi.chat(text)).resposta,
+      });
 
       setMessages((currentMessages) => [
         ...currentMessages,
         {
           id: createMessageId('sky'),
           author: 'sky',
-          text: data.resposta.trim(),
-          source: 'groq',
+          text: responseText,
+          source: transport,
         },
       ]);
     } catch (error) {
-      console.error(`Falha no modo ${chatMode} do Scum:`, error);
-
       const localContextMissing =
         chatMode === 'local' &&
         error instanceof LocalModelError &&
@@ -428,17 +378,21 @@ export default function HomeScreen() {
         setIsLocalModelLoaded(false);
       }
 
+      if (chatMode === 'groq') {
+        setInput(text);
+      }
+
       const mensagemDeErro = chatMode === 'local'
         ? !isLocalModelLoaded || localContextMissing ||
           (error instanceof Error && error.message === 'local_model_not_loaded')
           ? 'O modelo local está descarregado. Use “Carregar modelo” no menu antes de enviar.'
           : 'O modelo local não conseguiu responder. Tente novamente.'
-        : error instanceof TypeError
-          ? 'Sem conexão com a API do Scum. Verifique a rede e tente novamente.'
-          : 'A API não conseguiu responder. Tente novamente.';
+        : toSafeApiMessage(error);
 
       setMessages((currentMessages) => [
-        ...currentMessages,
+        ...(chatMode === 'groq'
+          ? currentMessages.filter((message) => message.id !== userMessage.id)
+          : currentMessages),
         {
           id: createMessageId('sky'),
           author: 'sky',

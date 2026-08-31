@@ -1,6 +1,12 @@
 # Scum Mobile
 
-Aplicativo Expo do Scum. A base nativa do modo Local usa `llama.rn` no próprio celular; o chat ainda continua ligado ao backend nesta etapa.
+Aplicativo Expo do Scum. O modo Online usa o backend remoto autenticado; o modo Local usa `llama.rn` inteiramente no celular.
+
+## Backend Online
+
+Copie `.env.example` para `.env` e configure `EXPO_PUBLIC_SCUM_API_URL` e `EXPO_PUBLIC_SCUM_API_TOKEN`. Produção exige HTTPS; desenvolvimento também aceita HTTP para um servidor local. O token é enviado somente no header Bearer e nunca é salvo no histórico ou no armazenamento do aplicativo.
+
+Variáveis `EXPO_PUBLIC_*` são incorporadas ao bundle e podem ser lidas por quem possui o aplicativo. Portanto, este token não é um segredo real: trata-se de uma limitação consciente do MVP de dono único, não de autenticação multiusuário.
 
 ## Modo Local experimental
 

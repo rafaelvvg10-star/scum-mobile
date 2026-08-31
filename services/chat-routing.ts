@@ -53,6 +53,13 @@ export function resolveChatTransport(mode: ChatMode, isLocalModelLoaded: boolean
   return mode;
 }
 
+export function executeChatTransport<T>(
+  mode: ChatMode,
+  transports: { online: () => Promise<T>; local: () => Promise<T> }
+) {
+  return mode === 'local' ? transports.local() : transports.online();
+}
+
 export function toLocalMessages(
   messages: RoutableChatMessage[]
 ): LocalTextMessage[] {

@@ -12,21 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import {
-    API_CONFIGURATION_ERROR,
-    API_URL,
-} from '@/config/api';
-
-type Memory = {
-  categoria: string;
-  chave: string;
-  valor: string;
-};
-
-type MemoriesResponse = {
-  total: number;
-  memorias: Memory[];
-};
+import { scumApi, toSafeApiMessage, type Memory } from '@/services/scum-api';
 
 function formatKey(key: string) {
   const text = key.replace(/_/g, ' ');
@@ -43,24 +29,11 @@ export default function MemoriesScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const loadMemories = useCallback(async () => {
-    if (!API_URL) {
-      setMemories([]);
-      setError(API_CONFIGURATION_ERROR);
-      setIsLoading(false);
-      return;
-    }
-
     setIsLoading(true);
     setError(null);
 
     try {
-      const response = await fetch(`${API_URL}/memorias`);
-
-      if (!response.ok) {
-        throw new Error(`A API respondeu com o status ${response.status}`);
-      }
-
-      const data: MemoriesResponse = await response.json();
+      const data = await scumApi.getMemories();
 
       if (!Array.isArray(data.memorias)) {
         throw new Error('A API retornou uma lista de memórias inválida');
@@ -68,10 +41,7 @@ export default function MemoriesScreen() {
 
       setMemories(data.memorias);
     } catch (requestError) {
-      console.error('Falha ao carregar memórias:', requestError);
-      setError(
-        'Não consegui carregar as memórias. Verifique se o cérebro local está ligado e se o celular está na mesma rede Wi-Fi.'
-      );
+      setError(toSafeApiMessage(requestError));
     } finally {
       setIsLoading(false);
     }
@@ -97,32 +67,17 @@ export default function MemoriesScreen() {
   };
 
   const deleteMemory = async (key: string) => {
-    if (!API_URL) {
-      setError(API_CONFIGURATION_ERROR);
-      return;
-    }
-
     setDeletingKey(key);
     setError(null);
 
     try {
-      const response = await fetch(
-        `${API_URL}/memorias/${encodeURIComponent(key)}`,
-        { method: 'DELETE' }
-      );
-
-      if (!response.ok) {
-        throw new Error(`A API respondeu com o status ${response.status}`);
-      }
+      await scumApi.deleteMemory(key);
 
       setMemories((currentMemories) =>
         currentMemories.filter((memory) => memory.chave !== key)
       );
     } catch (requestError) {
-      console.error('Falha ao apagar memória:', requestError);
-      setError(
-        'Não consegui apagar esta memória. Tente novamente com o cérebro local ligado.'
-      );
+      setError(toSafeApiMessage(requestError));
     } finally {
       setDeletingKey(null);
     }
@@ -148,7 +103,7 @@ export default function MemoriesScreen() {
         <View style={styles.titleArea}>
           <Text style={styles.title}>Memórias do Scum</Text>
           <Text style={styles.subtitle}>
-            Informações essenciais guardadas localmente
+            Informações essenciais guardadas pelo Scum Online
           </Text>
         </View>
 
@@ -175,7 +130,7 @@ export default function MemoriesScreen() {
       {isLoading ? (
         <View style={styles.centeredState}>
           <ActivityIndicator color="#6EA8FF" size="large" />
-          <Text style={styles.stateText}>Consultando memórias locais...</Text>
+          <Text style={styles.stateText}>Consultando memórias...</Text>
         </View>
       ) : (
         <FlatList

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   buildLocalMessages,
+  executeChatTransport,
   extractLocalCompletionText,
   LOCAL_INCOMPLETE_RESPONSE_FALLBACK,
   LOCAL_SYSTEM_PROMPT,
@@ -10,6 +11,36 @@ import {
   resolveChatTransport,
   toLocalMessages,
 } from './chat-routing.ts';
+
+test('Online uses only the remote client once and Local performs no fetch', async () => {
+  let remoteCalls = 0;
+  let localCalls = 0;
+  const transports = {
+    online: async () => { remoteCalls += 1; return 'online'; },
+    local: async () => { localCalls += 1; return 'local'; },
+  };
+
+  assert.equal(await executeChatTransport('groq', transports), 'online');
+  assert.equal(remoteCalls, 1);
+  assert.equal(localCalls, 0);
+  assert.equal(await executeChatTransport('local', transports), 'local');
+  assert.equal(remoteCalls, 1);
+  assert.equal(localCalls, 1);
+});
+
+test('Online failure does not silently execute Local', async () => {
+  let remoteCalls = 0;
+  let localCalls = 0;
+  await assert.rejects(
+    executeChatTransport('groq', {
+      online: async () => { remoteCalls += 1; throw new Error('offline'); },
+      local: async () => { localCalls += 1; return 'local'; },
+    }),
+    /offline/
+  );
+  assert.equal(remoteCalls, 1);
+  assert.equal(localCalls, 0);
+});
 
 test('routes Groq independently of local state', () => {
   assert.equal(resolveChatTransport('groq', false), 'groq');
