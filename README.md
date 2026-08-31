@@ -8,6 +8,21 @@ Copie `.env.example` para `.env` e configure `EXPO_PUBLIC_SCUM_API_URL` e `EXPO_
 
 Variáveis `EXPO_PUBLIC_*` são incorporadas ao bundle e podem ser lidas por quem possui o aplicativo. Portanto, este token não é um segredo real: trata-se de uma limitação consciente do MVP de dono único, não de autenticação multiusuário.
 
+Os perfis EAS usam os ambientes `development`, `preview` e `production`. Cadastre `EXPO_PUBLIC_SCUM_API_URL` e `EXPO_PUBLIC_SCUM_API_TOKEN` como variáveis plain text nos ambientes `preview` e `production` do projeto Expo; não coloque valores em `eas.json`. O perfil `preview` gera APK instalável diretamente, enquanto `production` permanece separado para distribuição futura.
+
+Antes de qualquer build remoto, confirme login com `eas whoami` e revise o que será enviado: código-fonte não ignorado, configuração Expo/EAS, dependências e as variáveis do ambiente escolhido. Só então, mediante autorização, use `eas build --platform android --profile preview`.
+
+## Homologação no aparelho
+
+1. Instale o APK de preview.
+2. Abra Online por Wi-Fi ou dados móveis e envie uma mensagem.
+3. Crie uma memória pessoal identificável, feche o aplicativo e desligue o PC.
+4. Reabra e confirme que Online continua respondendo.
+5. Converse sobre o assunto e verifique recuperação natural; depois mude de assunto e confirme que a lembrança não é forçada.
+6. Desative a internet e confirme uma mensagem Online curta, sem detalhes internos.
+7. Selecione Local e confirme que o GGUF responde offline.
+8. Restaure a internet e confirme que Online só volta quando selecionado.
+
 ## Modo Local experimental
 
 O modo Local é simples, offline e de emergência. Não há promessa de boa velocidade no Redmi Note 14.
