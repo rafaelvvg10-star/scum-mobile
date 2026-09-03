@@ -36,6 +36,14 @@
           "enableOpenCLAndHexagon": false
         }
       ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Permitir que o Scum use sua localização somente quando você pedir localização ou clima.",
+          "isAndroidBackgroundLocationEnabled": false,
+          "isAndroidForegroundServiceEnabled": false
+        }
+      ],
       "expo-secure-store",
       [
         "expo-splash-screen",

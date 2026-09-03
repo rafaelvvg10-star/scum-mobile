@@ -78,6 +78,10 @@ test('only identifies file URIs contained by the cache directory', () => {
     ),
     false
   );
+  assert.equal(
+    isFileUriInsideDirectory(cacheUri, cacheUri),
+    false
+  );
 });
 
 test('redacts Android URIs and private paths from diagnostics', () => {

@@ -48,6 +48,7 @@ export class LocalModelError extends Error {
       | 'insufficient_memory'
       | 'incompatible_model'
       | 'load_failed'
+      | 'unknown_error'
       | 'busy'
       | 'not_loaded',
     message: string
@@ -177,17 +178,36 @@ function classifyLoadError(error: unknown): LocalModelError {
 
   const detail = error instanceof Error ? error.message : String(error);
 
-  if (/memory|alloc|mmap|out of memory/i.test(detail)) {
+  if (
+    /out of memory|not enough memory|memory allocation|failed to alloc|mmap failed/i.test(
+      detail
+    )
+  ) {
     return new LocalModelError(
       'insufficient_memory',
       'Memória insuficiente para carregar este modelo. Descarregue outros aplicativos ou escolha um GGUF menor.'
     );
   }
 
-  if (/gguf|unsupported|incompatible|architecture|tensor|vocab/i.test(detail)) {
+  if (
+    /enoent|eacces|permission denied|not found|no such file|cannot open|failed to open/i.test(
+      detail
+    )
+  ) {
+    return new LocalModelError(
+      'invalid_file',
+      'O arquivo do modelo não existe mais ou não pode ser acessado.'
+    );
+  }
+
+  if (
+    /gguf|unsupported|incompatible|unknown model architecture|tensor|vocab/i.test(
+      detail
+    )
+  ) {
     return new LocalModelError(
       'incompatible_model',
-      'Modelo incompatível ou GGUF inválido. Tente uma quantização compatível, como Qwen2.5 0.5B Instruct Q4.'
+      'Este GGUF é inválido ou não é compatível com a versão atual do runtime local.'
     );
   }
 
@@ -198,9 +218,16 @@ function classifyLoadError(error: unknown): LocalModelError {
     );
   }
 
+  if (/init|context|load model/i.test(detail)) {
+    return new LocalModelError(
+      'load_failed',
+      'O runtime local não conseguiu inicializar este modelo.'
+    );
+  }
+
   return new LocalModelError(
-    'load_failed',
-    'Não foi possível carregar o modelo local. Selecione o arquivo novamente e confira o espaço e a memória disponíveis.'
+    'unknown_error',
+    'Ocorreu um erro desconhecido ao carregar o modelo local.'
   );
 }
 
@@ -243,19 +270,15 @@ async function initializeLocalModel(modelUri: string) {
       );
     }
 
-    if (context) {
-      await context.release();
-      context = null;
-    }
-
     loadStage = 'inicialização do contexto llama.rn';
-    context = await llama.initLlama({
+    const initializedContext = await llama.initLlama({
       model: nativePath,
       n_ctx: LOCAL_MODEL_CONFIG.nCtx,
       n_gpu_layers: LOCAL_MODEL_CONFIG.nGpuLayers,
       n_parallel: LOCAL_MODEL_CONFIG.nParallel,
       use_mlock: false,
     });
+    context = initializedContext;
 
     return info;
   } catch (error) {
@@ -285,7 +308,7 @@ export async function getStoredLocalModel(): Promise<LocalModelMetadata | null> 
       typeof metadata.name !== 'string' ||
       !metadata.name.toLowerCase().endsWith('.gguf') ||
       typeof metadata.uri !== 'string' ||
-      !metadata.uri.startsWith(modelDirectory().uri) ||
+      !isFileUriInsideDirectory(metadata.uri, modelDirectory().uri) ||
       !new File(metadata.uri).exists
     ) {
       throw new Error('Metadados inválidos');
@@ -317,14 +340,13 @@ export async function loadStoredLocalModel(): Promise<LocalModelSelection> {
 
   operationInProgress = true;
   try {
+    if (context) {
+      await context.release();
+      context = null;
+    }
     await initializeLocalModel(metadata.uri);
     return { metadata, loaded: true };
   } catch (error) {
-    if (context) {
-      await context.release().catch(() => undefined);
-      context = null;
-    }
-
     throw classifyLoadError(error);
   } finally {
     operationInProgress = false;
@@ -339,7 +361,7 @@ export async function selectAndLoadLocalModel(
   }
 
   const result = await DocumentPicker.getDocumentAsync({
-    type: 'application/octet-stream',
+    type: '*/*',
     copyToCacheDirectory: true,
     multiple: false,
   });
@@ -374,12 +396,6 @@ export async function selectAndLoadLocalModel(
     }
 
     const storedModel = await getStoredLocalModel();
-    if (storedModel) {
-      throw new LocalModelError(
-        'load_failed',
-        'Já existe um modelo importado. Descarregue e remova o arquivo atual antes de importar outro.'
-      );
-    }
 
     const confirmed = await options.confirmImport({
       name: asset.name,
@@ -400,27 +416,52 @@ export async function selectAndLoadLocalModel(
         size,
         options.onProgress
       );
-      const info = await initializeLocalModel(importedFile.uri);
-
-      const metadata: LocalModelMetadata = {
+      let metadata: LocalModelMetadata = {
         name: asset.name,
         uri: importedFile.uri,
         size,
         mimeType: asset.mimeType ?? null,
-        architecture: readStringField(info, 'general.architecture'),
-        modelName: readStringField(info, 'general.name'),
+        architecture: null,
+        modelName: null,
         selectedAt: new Date().toISOString(),
       };
 
-      await persistMetadata(metadata);
-      return { metadata, loaded: true };
-    } catch (error) {
       if (context) {
-        await context.release().catch(() => undefined);
+        await context.release();
         context = null;
       }
 
-      if (importedFile?.exists) {
+      await persistMetadata(metadata);
+
+      if (storedModel && storedModel.uri !== importedFile.uri) {
+        const previousFile = new File(storedModel.uri);
+        if (previousFile.exists) {
+          try {
+            previousFile.delete();
+          } catch (error) {
+            logLoadFailure('remoção do modelo substituído', error);
+          }
+        }
+      }
+
+      try {
+        const info = await initializeLocalModel(importedFile.uri);
+        metadata = {
+          ...metadata,
+          architecture: readStringField(info, 'general.architecture'),
+          modelName: readStringField(info, 'general.name'),
+        };
+        await persistMetadata(metadata).catch((error) =>
+          logLoadFailure('atualização dos metadados GGUF', error)
+        );
+      } catch (error) {
+        throw classifyLoadError(error);
+      }
+
+      return { metadata, loaded: true };
+    } catch (error) {
+      const selectedModel = await getStoredLocalModel().catch(() => null);
+      if (importedFile?.exists && selectedModel?.uri !== importedFile.uri) {
         importedFile.delete();
       }
 
@@ -455,7 +496,7 @@ export async function removeImportedLocalModel() {
   if (metadata) {
     const directoryUri = modelDirectory().uri;
 
-    if (!metadata.uri.startsWith(directoryUri)) {
+    if (!isFileUriInsideDirectory(metadata.uri, directoryUri)) {
       throw new LocalModelError(
         'invalid_file',
         'A referência do modelo importado é inválida.'

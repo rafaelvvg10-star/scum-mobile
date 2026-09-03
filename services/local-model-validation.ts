@@ -36,7 +36,11 @@ export function isFileUriInsideDirectory(uri: string, directoryUri: string) {
     ? directoryUri
     : `${directoryUri}/`;
 
-  return uri.startsWith('file://') && uri.startsWith(directoryPrefix);
+  return (
+    uri.startsWith('file://') &&
+    uri !== directoryUri &&
+    uri.startsWith(directoryPrefix)
+  );
 }
 
 export function sanitizeLocalModelDiagnostic(value: unknown) {

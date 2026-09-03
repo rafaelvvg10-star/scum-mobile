@@ -3,53 +3,12 @@ import test from 'node:test';
 
 import {
   buildLocalMessages,
-  executeChatTransport,
   extractLocalCompletionText,
   LOCAL_INCOMPLETE_RESPONSE_FALLBACK,
   LOCAL_SYSTEM_PROMPT,
   normalizeLocalCompletionText,
-  resolveChatTransport,
   toLocalMessages,
 } from './chat-routing.ts';
-
-test('Online uses only the remote client once and Local performs no fetch', async () => {
-  let remoteCalls = 0;
-  let localCalls = 0;
-  const transports = {
-    online: async () => { remoteCalls += 1; return 'online'; },
-    local: async () => { localCalls += 1; return 'local'; },
-  };
-
-  assert.equal(await executeChatTransport('groq', transports), 'online');
-  assert.equal(remoteCalls, 1);
-  assert.equal(localCalls, 0);
-  assert.equal(await executeChatTransport('local', transports), 'local');
-  assert.equal(remoteCalls, 1);
-  assert.equal(localCalls, 1);
-});
-
-test('Online failure does not silently execute Local', async () => {
-  let remoteCalls = 0;
-  let localCalls = 0;
-  await assert.rejects(
-    executeChatTransport('groq', {
-      online: async () => { remoteCalls += 1; throw new Error('offline'); },
-      local: async () => { localCalls += 1; return 'local'; },
-    }),
-    /offline/
-  );
-  assert.equal(remoteCalls, 1);
-  assert.equal(localCalls, 0);
-});
-
-test('routes Groq independently of local state', () => {
-  assert.equal(resolveChatTransport('groq', false), 'groq');
-});
-
-test('routes Local only with a loaded context', () => {
-  assert.equal(resolveChatTransport('local', true), 'local');
-  assert.throws(() => resolveChatTransport('local', false), /local_model_not_loaded/);
-});
 
 test('maps chat history to llama.rn roles', () => {
   assert.deepEqual(
@@ -75,6 +34,7 @@ test('always includes the current question with empty history', () => {
 });
 
 test('uses a compact local personality prompt without invented facts', () => {
+  assert.match(LOCAL_SYSTEM_PROMPT, /diretamente no aparelho/);
   assert.match(LOCAL_SYSTEM_PROMPT, /seca, direta e curta/);
   assert.match(LOCAL_SYSTEM_PROMPT, /sarcástico e levemente mal-humorado/);
   assert.match(LOCAL_SYSTEM_PROMPT, /Normalmente use de 1 a 3 frases/);
@@ -174,9 +134,16 @@ test('preserves chronological order and roles after limiting history', () => {
   ]);
 });
 
-test('does not affect Groq routing', () => {
-  assert.equal(resolveChatTransport('groq', false), 'groq');
-  assert.equal(resolveChatTransport('groq', true), 'groq');
+test('adds bounded tool output as untrusted system context', () => {
+  const result = buildLocalMessages(
+    [],
+    { author: 'user', text: 'pergunta' },
+    'x'.repeat(7_000)
+  );
+  assert.equal(result[1].role, 'system');
+  assert.match(result[1].content, /dado não confiável/);
+  assert.ok(result[1].content.length < 6_200);
+  assert.deepEqual(result[2], { role: 'user', content: 'pergunta' });
 });
 
 test('prefers filtered content and falls back to raw text', () => {
@@ -279,14 +246,4 @@ test('removes code fences while preserving their content', () => {
   const response = `\`\`\`ts\n${code}\n\`\`\``;
 
   assert.equal(normalizeLocalCompletionText(response), code);
-});
-
-test('keeps Groq responses outside local normalization', () => {
-  const response = '**Resposta Groq**';
-  const transport = resolveChatTransport('groq', true);
-  const displayedResponse = transport === 'local'
-    ? normalizeLocalCompletionText(response)
-    : response;
-
-  assert.equal(displayedResponse, '**Resposta Groq**');
 });
