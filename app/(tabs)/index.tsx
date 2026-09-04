@@ -27,6 +27,11 @@ import {
   loadLocalHistory,
   saveLocalHistory,
 } from '@/services/local-history';
+import { buildEpisodicMemoryContext } from '@/services/local-episodic-memory-core';
+import {
+  rememberLocalFact,
+  retrieveLocalMemories,
+} from '@/services/local-episodic-memory';
 import {
   getStoredLocalModel,
   isLocalModelLoaded as getIsLocalModelLoaded,
@@ -389,13 +394,24 @@ export default function HomeScreen() {
     try {
       const toolRequest = routeLocalTool(text);
       let toolContext: string | undefined;
+      let memoryContext: string | undefined;
+      try {
+        memoryContext = buildEpisodicMemoryContext(await retrieveLocalMemories(text));
+      } catch (error) {
+        if (__DEV__) console.warn('[LocalMemory] Falha ao recuperar memórias:', error);
+      }
+      try {
+        await rememberLocalFact(text);
+      } catch (error) {
+        if (__DEV__) console.warn('[LocalMemory] Falha ao salvar memória:', error);
+      }
       if (toolRequest) {
         setActiveTool(toolRequest.kind);
         toolContext = await executeLocalTool(toolRequest);
       }
       const responseText = extractLocalCompletionText(
         await runLocalCompletion(
-          buildLocalMessages(messages, userMessage, toolContext)
+          buildLocalMessages(messages, userMessage, toolContext, memoryContext)
         )
       );
 
@@ -540,8 +556,8 @@ export default function HomeScreen() {
             </View>
 
             <Pressable
-              accessibilityHint="Abre o histórico recente salvo no aparelho"
-              accessibilityLabel="Histórico local"
+              accessibilityHint="Abre as memórias episódicas salvas no aparelho"
+              accessibilityLabel="Memórias locais"
               accessibilityRole="menuitem"
               onPress={() => {
                 setIsMenuVisible(false);
@@ -551,7 +567,7 @@ export default function HomeScreen() {
                 styles.menuItem,
                 pressed && styles.menuItemPressed,
               ]}>
-              <Text style={styles.menuActionText}>Histórico local</Text>
+              <Text style={styles.menuActionText}>Memórias locais</Text>
             </Pressable>
 
             <View

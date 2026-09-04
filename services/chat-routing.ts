@@ -57,7 +57,8 @@ export function toLocalMessages(
 export function buildLocalMessages(
   previousMessages: RoutableChatMessage[],
   currentQuestion: RoutableChatMessage,
-  toolContext?: string
+  toolContext?: string,
+  memoryContext?: string
 ): RNLlamaOAICompatibleMessage[] {
   const recentMessages = toLocalMessages(
     previousMessages.slice(-LOCAL_HISTORY_MESSAGE_LIMIT)
@@ -88,6 +89,9 @@ export function buildLocalMessages(
 
   return [
     { role: 'system', content: LOCAL_SYSTEM_PROMPT },
+    ...(memoryContext
+      ? [{ role: 'system' as const, content: memoryContext.slice(0, 600) }]
+      : []),
     ...(toolContext
       ? [{
           role: 'system' as const,
