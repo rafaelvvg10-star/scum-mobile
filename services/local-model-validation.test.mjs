@@ -94,3 +94,13 @@ test('redacts Android URIs and private paths from diagnostics', () => {
     'Error: failed <private-file> from <content-uri>'
   );
 });
+
+test('imports Android content URIs directly without a duplicate cache copy', async () => {
+  const source = await import('node:fs/promises').then((fs) =>
+    fs.readFile(new URL('./local-model.ts', import.meta.url), 'utf8')
+  );
+
+  assert.match(source, /copyToCacheDirectory:\s*false/u);
+  assert.match(source, /LegacyFileSystem\.copyAsync/u);
+  assert.doesNotMatch(source, /readableStream\(\)/u);
+});

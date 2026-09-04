@@ -1,5 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File, Paths } from 'expo-file-system';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import type { LlamaContext, RNLlamaOAICompatibleMessage } from 'llama.rn';
 
@@ -110,28 +111,10 @@ async function copyToPrivateStorage(
   const directory = modelDirectory();
   directory.create({ idempotent: true, intermediates: true });
   const destination = new File(directory, `model-${Date.now()}.gguf`);
-  const source = new File(asset.uri);
-  destination.create({ overwrite: false });
-
-  const reader = source.readableStream().getReader();
-  const writer = destination.writableStream().getWriter();
-  let copied = 0;
 
   onProgress?.(0);
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-
-      if (done) {
-        break;
-      }
-
-      await writer.write(value);
-      copied += value.byteLength;
-      onProgress?.(Math.min(copied / size, 1));
-    }
-
-    await writer.close();
+    await LegacyFileSystem.copyAsync({ from: asset.uri, to: destination.uri });
 
     const handle = destination.open();
     let header: Uint8Array;
@@ -143,7 +126,7 @@ async function copyToPrivateStorage(
 
     const validationError = validateCopiedModel({
       expectedSize: size,
-      copiedSize: copied,
+      copiedSize: destination.size,
       actualSize: destination.size,
       header,
     });
@@ -160,14 +143,66 @@ async function copyToPrivateStorage(
     onProgress?.(1);
     return destination;
   } catch (error) {
-    await reader.cancel().catch(() => undefined);
-    await writer.abort(error).catch(() => undefined);
-
     if (destination.exists) {
       destination.delete();
     }
 
-    throw error;
+    if (error instanceof LocalModelError) throw error;
+
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/enospc|no space|disk full/i.test(detail)) {
+      throw new LocalModelError(
+        'insufficient_storage',
+        'O armazenamento interno ficou sem espaço durante a importação.'
+      );
+    }
+
+    throw new LocalModelError(
+      'invalid_file',
+      'O Android não permitiu ler o arquivo selecionado. Escolha o GGUF novamente pelo seletor de arquivos.'
+    );
+  }
+}
+
+async function getPickedFileSize(asset: DocumentPicker.DocumentPickerAsset) {
+  if (asset.size !== undefined && Number.isFinite(asset.size) && asset.size > 0) {
+    return asset.size;
+  }
+
+  try {
+    const info = await LegacyFileSystem.getInfoAsync(asset.uri);
+    if (
+      info.exists &&
+      !info.isDirectory &&
+      'size' in info &&
+      Number.isFinite(info.size) &&
+      info.size > 0
+    ) {
+      return info.size;
+    }
+  } catch {
+    // A mensagem compreensível é produzida abaixo.
+  }
+
+  throw new LocalModelError(
+    'invalid_file',
+    'O provedor de arquivos não informou o tamanho do GGUF. Escolha uma cópia salva no armazenamento local do aparelho.'
+  );
+}
+
+async function pickLocalGguf() {
+  try {
+    return await DocumentPicker.getDocumentAsync({
+      // GGUF não possui MIME Android padronizado; valide a extensão após a escolha.
+      type: '*/*',
+      copyToCacheDirectory: false,
+      multiple: false,
+    });
+  } catch {
+    throw new LocalModelError(
+      'invalid_file',
+      'Não foi possível abrir o seletor de arquivos do Android.'
+    );
   }
 }
 
@@ -360,123 +395,104 @@ export async function selectAndLoadLocalModel(
     throw new LocalModelError('busy', 'Há uma operação local em andamento.');
   }
 
-  const result = await DocumentPicker.getDocumentAsync({
-    type: '*/*',
-    copyToCacheDirectory: true,
-    multiple: false,
-  });
+  const result = await pickLocalGguf();
 
   if (result.canceled) {
     return null;
   }
 
   const asset = result.assets[0];
-  const pickerCacheCopy = isFileUriInsideDirectory(asset.uri, Paths.cache.uri)
-    ? new File(asset.uri)
-    : null;
+  if (!asset) {
+    throw new LocalModelError(
+      'invalid_file',
+      'O seletor não retornou nenhum arquivo.'
+    );
+  }
+
+  validateAsset(asset);
+  const size = await getPickedFileSize(asset);
+
+  const availableSpace = Paths.availableDiskSpace;
+  if (availableSpace < size + STORAGE_SAFETY_MARGIN) {
+    throw new LocalModelError(
+      'insufficient_storage',
+      'Espaço insuficiente. Libere espaço interno antes de importar o modelo.'
+    );
+  }
+
+  const storedModel = await getStoredLocalModel();
+
+  const confirmed = await options.confirmImport({
+    name: asset.name,
+    size,
+    availableSpace,
+  });
+
+  if (!confirmed) {
+    return null;
+  }
+
+  operationInProgress = true;
+  let importedFile: File | null = null;
 
   try {
-    validateAsset(asset);
-    const source = new File(asset.uri);
-    const size = asset.size ?? source.size;
-
-    if (!Number.isFinite(size) || size <= 0) {
-      throw new LocalModelError(
-        'invalid_file',
-        'Não foi possível determinar o tamanho do arquivo GGUF.'
-      );
-    }
-
-    const availableSpace = Paths.availableDiskSpace;
-    if (availableSpace < size + STORAGE_SAFETY_MARGIN) {
-      throw new LocalModelError(
-        'insufficient_storage',
-        'Espaço insuficiente. Libere espaço interno antes de importar o modelo.'
-      );
-    }
-
-    const storedModel = await getStoredLocalModel();
-
-    const confirmed = await options.confirmImport({
-      name: asset.name,
+    importedFile = await copyToPrivateStorage(
+      asset,
       size,
-      availableSpace,
-    });
+      options.onProgress
+    );
+    let metadata: LocalModelMetadata = {
+      name: asset.name,
+      uri: importedFile.uri,
+      size,
+      mimeType: asset.mimeType ?? null,
+      architecture: null,
+      modelName: null,
+      selectedAt: new Date().toISOString(),
+    };
 
-    if (!confirmed) {
-      return null;
+    if (context) {
+      await context.release();
+      context = null;
     }
 
-    operationInProgress = true;
-    let importedFile: File | null = null;
+    await persistMetadata(metadata);
 
-    try {
-      importedFile = await copyToPrivateStorage(
-        asset,
-        size,
-        options.onProgress
-      );
-      let metadata: LocalModelMetadata = {
-        name: asset.name,
-        uri: importedFile.uri,
-        size,
-        mimeType: asset.mimeType ?? null,
-        architecture: null,
-        modelName: null,
-        selectedAt: new Date().toISOString(),
-      };
-
-      if (context) {
-        await context.release();
-        context = null;
-      }
-
-      await persistMetadata(metadata);
-
-      if (storedModel && storedModel.uri !== importedFile.uri) {
-        const previousFile = new File(storedModel.uri);
-        if (previousFile.exists) {
-          try {
-            previousFile.delete();
-          } catch (error) {
-            logLoadFailure('remoção do modelo substituído', error);
-          }
+    if (storedModel && storedModel.uri !== importedFile.uri) {
+      const previousFile = new File(storedModel.uri);
+      if (previousFile.exists) {
+        try {
+          previousFile.delete();
+        } catch (error) {
+          logLoadFailure('remoção do modelo substituído', error);
         }
       }
+    }
 
-      try {
-        const info = await initializeLocalModel(importedFile.uri);
-        metadata = {
-          ...metadata,
-          architecture: readStringField(info, 'general.architecture'),
-          modelName: readStringField(info, 'general.name'),
-        };
-        await persistMetadata(metadata).catch((error) =>
-          logLoadFailure('atualização dos metadados GGUF', error)
-        );
-      } catch (error) {
-        throw classifyLoadError(error);
-      }
-
-      return { metadata, loaded: true };
+    try {
+      const info = await initializeLocalModel(importedFile.uri);
+      metadata = {
+        ...metadata,
+        architecture: readStringField(info, 'general.architecture'),
+        modelName: readStringField(info, 'general.name'),
+      };
+      await persistMetadata(metadata).catch((error) =>
+        logLoadFailure('atualização dos metadados GGUF', error)
+      );
     } catch (error) {
-      const selectedModel = await getStoredLocalModel().catch(() => null);
-      if (importedFile?.exists && selectedModel?.uri !== importedFile.uri) {
-        importedFile.delete();
-      }
-
       throw classifyLoadError(error);
-    } finally {
-      operationInProgress = false;
     }
+
+    return { metadata, loaded: true };
+  } catch (error) {
+    const selectedModel = await getStoredLocalModel().catch(() => null);
+    if (importedFile?.exists && selectedModel?.uri !== importedFile.uri) {
+      importedFile.delete();
+    }
+
+    throw classifyLoadError(error);
   } finally {
-    if (pickerCacheCopy?.exists) {
-      try {
-        pickerCacheCopy.delete();
-      } catch (error) {
-        logLoadFailure('remoção da cópia temporária do DocumentPicker', error);
-      }
-    }
+    operationInProgress = false;
   }
 }
 
