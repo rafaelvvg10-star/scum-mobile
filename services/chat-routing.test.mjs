@@ -33,13 +33,13 @@ test('always includes the current question with empty history', () => {
   );
 });
 
-test('uses the compact, curious Scum personality without invented answers', () => {
-  assert.match(LOCAL_SYSTEM_PROMPT, /simples, ingênuo, curioso/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /respostas relativamente curtas/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /sem perguntar automaticamente como pode ajudar/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /sem oferecer ajuda no final/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /Nunca invente para parecer que sabe/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /use memórias disponíveis/);
+test('uses the compact, direct Scum personality without invented answers', () => {
+  assert.match(LOCAL_SYSTEM_PROMPT, /extremamente direto e breve/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /Responda somente ao que foi perguntado/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /Não ofereça ajuda/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /Se não souber, diga: "Não sei\."/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /Não invente respostas/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /Use memórias relevantes/);
   assert.ok(LOCAL_SYSTEM_PROMPT.length < 1_000);
 });
 
