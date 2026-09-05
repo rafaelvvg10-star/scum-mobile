@@ -33,17 +33,14 @@ test('always includes the current question with empty history', () => {
   );
 });
 
-test('uses a compact local personality prompt without invented facts', () => {
-  assert.match(LOCAL_SYSTEM_PROMPT, /diretamente no aparelho/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /seca, direta e curta/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /sarcástico e levemente mal-humorado/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /Normalmente use de 1 a 3 frases/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /não invente fatos, memórias ou capacidades/);
-  assert.match(LOCAL_SYSTEM_PROMPT, /Termine sempre a frase antes de encerrar/);
-  assert.match(
-    LOCAL_SYSTEM_PROMPT,
-    /Use somente texto simples, sem títulos, negrito ou outros marcadores Markdown/
-  );
+test('uses the compact, curious Scum personality without invented answers', () => {
+  assert.match(LOCAL_SYSTEM_PROMPT, /simples, ingênuo, curioso/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /respostas relativamente curtas/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /sem perguntar automaticamente como pode ajudar/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /sem oferecer ajuda no final/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /Nunca invente para parecer que sabe/);
+  assert.match(LOCAL_SYSTEM_PROMPT, /use memórias disponíveis/);
+  assert.ok(LOCAL_SYSTEM_PROMPT.length < 1_000);
 });
 
 test('keeps a short conversation unchanged before the current question', () => {
