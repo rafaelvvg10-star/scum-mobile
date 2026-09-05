@@ -1,39 +1,68 @@
 # Scum Mobile
 
-Assistente Android local-first feito com Expo e `llama.rn`. O aplicativo não depende de backend próprio nem de Groq: o usuário importa um arquivo GGUF, que permanece no armazenamento privado do aparelho, e toda inferência acontece localmente.
+Scum é um projeto pessoal de estudo, feito por um desenvolvedor iniciante para
+aprender na prática React Native, Expo, integração nativa, LLMs locais, GGUF,
+persistência, memória e conceitos de desenvolvimento de software.
 
-## Recursos
+Ele evoluiu do antigo **Sky Companion**. Não é um produto profissional, não
+pretende competir com assistentes comerciais e continua sendo um Beta
+experimental e imperfeito. O trabalho realizado é real; as limitações também.
 
-- importação e troca genérica de arquivos `.gguf`;
-- histórico recente persistido localmente;
-- calculadora segura e data/hora totalmente offline;
-- localização foreground somente quando solicitada;
-- clima atual via Open-Meteo;
-- leitura limitada de páginas HTTP/HTTPS públicas.
+Na arquitetura mobile final, o Scum funciona local-first no Android usando
+`llama.rn`. O usuário escolhe e importa o próprio modelo GGUF, e o funcionamento
+principal pode ser totalmente offline depois da importação. O aplicativo mantém
+histórico e memória episódica no próprio aparelho.
 
-Busca web genérica não está habilitada. Brave e Tavily exigem chaves que não podem ser mantidas secretas em um APK puramente local; nenhum backend novo foi criado para contornar isso.
+O mobile não depende de Groq, Render, Turso ou backend remoto. Nenhum GGUF é
+incluído no APK.
 
-## Verificações
+Modelos pequenos podem responder mal, interpretar frases literalmente ou ser
+extremamente limitados. Essa é uma limitação conhecida e aceita do Beta. A
+personalidade final do Scum é propositalmente simples e direta.
+
+**O projeto Scum Beta está oficialmente encerrado.**
+
+## Tecnologias
+
+- React Native
+- Expo
+- TypeScript
+- `llama.rn`
+- GGUF
+- Android ARM64
+
+## Instalação e uso
+
+Para preparar o projeto:
 
 ```bash
 npm install
-npm test
-npx tsc --noEmit
-npm run lint
-npx expo-doctor
 ```
 
-## APK standalone
-
-O perfil `preview` é ARM64-only, não depende de Metro nem Expo Go e não inclui modelos:
+Para gerar um APK standalone ARM64:
 
 ```bash
-npx eas-cli@16.28.0 build --platform android --profile preview --non-interactive
+npx eas-cli build --platform android --profile preview
 ```
 
-No aparelho, abra o menu, escolha **Escolher e importar GGUF** e selecione qualquer `.gguf`. Compatibilidade e consumo de memória dependem da versão do `llama.rn` e do hardware.
+Depois de instalar o APK, abra o menu, escolha **Escolher e importar GGUF** e
+selecione um arquivo `.gguf`. A compatibilidade e o consumo de memória dependem
+do modelo e do aparelho.
 
-Localização é pedida somente ao usar localização ou clima. Não há rastreamento em segundo plano nem persistência das coordenadas.
+## Validação final
+
+- 49 testes aprovados
+- TypeScript aprovado
+- ESLint aprovado
+- Expo Doctor: 18/18
+- APK standalone ARM64 validado
+
+## História
+
+Os detalhes do caminho do Sky Companion até o Scum estão em
+[ROADMAP](https://github.com/rafaelvvg10-star/scum-backend/blob/feat/turso-episodic-memory/historia/ROADMAP.md),
+[CHANGELOG](https://github.com/rafaelvvg10-star/scum-backend/blob/feat/turso-episodic-memory/historia/CHANGELOG.md)
+e [LEGADO](https://github.com/rafaelvvg10-star/scum-backend/blob/feat/turso-episodic-memory/historia/00_LEGADO.md).
 
 ## Licença
 
